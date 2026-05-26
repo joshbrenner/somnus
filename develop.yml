@@ -1,0 +1,34 @@
+# requirements for somnus development
+name: somnus
+dependencies:
+    - numpy
+    - scipy
+    - matplotlib
+    - ipython
+    - notebook
+    - psutil
+    - pytest
+    - isort
+    - mypy
+    - pylint
+    - pip
+    - pip:
+      - openseize
+      # TODO
+      #- mousefinder
+      - black
+      - codespell
+      - bumpver
+      # doc builders
+      - mkdocs
+      - mkdocs-material
+      - "mkdocstrings[python]"
+      - mkdocs-execute-plugin
+      # packaging
+      - pip-tools
+      - build
+      - twine
+      # stubs
+      - types-psutil
+      - scipy-stubs
+

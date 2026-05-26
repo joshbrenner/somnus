@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "somnus"
+version = "1.0.0"
+description = """
+Python models for sleep state classification.
+"""
+readme = "README.md"
+authors =[
+    {name="Joshua Brenner", email="Joshua.Brenner@bcm.edu"},
+    {name="Matthew Caudill", email="mscaudill@gmail.com" }
+]
+license = "BSD-3-Clause"
+license-files = ["LICEN[CS]E*"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+keywords = [
+    "sleep",
+    "eeg",
+    "machine learning",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "ipython",
+    "notebook",
+    "psutil",
+]
+requires-python = ">=3.13"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "pylint",
+    "isort",
+    "codespell",
+    "black",
+    "bumpver",
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "mkdocs-jupyter",
+    "pip-tools",
+    "build",
+    "twine"
+]
+linting = ["codespell", "isort", "pylint", "black"]
+typing = ["mypy"]
+testing = ["pytest", "pytest-cov"]
+
+[project.urls]
+Homepage = "https://github.com/mscaudill/somnus"
+
+# inform setuptools where to find submodules, project typing and additional data
+[tool.setuptools.packages.find]
+where = ["src"]
+[tool.setuptools.package-data]
+"tabbed" = ["py.typed"]
+"tabbed.samples" = ["*.txt"]
+
+# bumpver configuration
+[tool.bumpver]
+current_version = "1.2.1"
+version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
+commit_message = 'bump version {old_version} -> {new_version}'
+commit = true
+tag = true
+push = true
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"',
+    'version = "{version}"'
+]
+"src/somnus/__init__.py" = ['__version__ = "{version}"']
+
+
+# mypy configuration
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# 3rd party's without annotations
+module = []
+ignore_missing_imports = true
+
+# pylint configuration
+[tool.pylint.design]
+max-attributes = 10
+max-args = 10
+max-locals = 30
+
+[tool.pylint.basic]
+argument-naming-style = "any"
+variable-naming-style = "any"
+attr-naming-style = "any"
+
+[tool.pylint.main]
+load-plugins = "pylint.extensions.typing"
+
+[tool.pylint.messages_control]
+disable = ["ungrouped-imports"]
+
+[tool.isort]
+profile = 'black'
+line_length = 80
+
+[tool.codespell]
+skip = '*.txt,*.ipynb, tests, ./src/somnus.egg-info'
+before-context = 3
+after-context = 3
+quiet-level = 3
+
+[tool.black]
+line-length = 80
+skip-string-normalization = true
