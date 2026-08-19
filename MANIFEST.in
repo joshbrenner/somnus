@@ -1,0 +1,2 @@
+# The released model weights ship inside the package.
+recursive-include src/somnus/models *.json
