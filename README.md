@@ -7,16 +7,18 @@
 
 Somnus assigns **Wake / NREM / REM** to every 4-second epoch of a mouse
 polysomnography recording, using EEG, EMG, and — when available —
-video-derived locomotion. It ships a trained model, a batch scorer, a review
-interface for correcting the model's output, and a fine-tuning step that
-adapts the model to your animals without discarding what it already knows.
+video-derived locomotion. It includes a trained logistic model, a batch scorer, 
+a review interface for correcting the model's output, and a fine-tuning step that
+adapts the model to your dataset.
 
-The design goal is not maximum accuracy on one rig. It is a model that **runs
-on whatever data you have** and **degrades honestly** when something is
-missing: features are computed in frequency tiers gated by each recording's
-*measured* bandwidth, every feature is z-scored within its own recording, and
-temporal structure comes from an HMM/Viterbi decode with a user-facing
-"transition resistance" knob. One model scores both a 128 Hz EEG-only
+The design goal is not maximum accuracy on one rig. It is a system that **runs
+on whatever data you have**, and that can be readily adapted to disease models
+with degraded sleep architecture, where heavier commercial scorers may fail altogether.
+
+Features are computed in frequency tiers gated by each recording's *measured* bandwidth 
+and every feature is z-scored within its own recording. Temporal structure of sleep comes from an 
+HMM/Viterbi model with a "transition resistance" knob to allow you to adjust the 
+frequency of state transitions. Hence, a single logistic model scores both a 128 Hz EEG-only 
 recording and a 5 kHz EEG+EMG+video recording.
 
 ## Install
