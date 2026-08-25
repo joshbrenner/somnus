@@ -24,8 +24,8 @@ venv/
 # ---------------------------------------------------------------------------
 # Personal notes, planning documents, provenance records, QC one-offs
 private/
-# The training matrix + manifest (available on request / with the preprint)
-training_data/
+# Training matrices + experiment runs (available on request / with the preprint)
+training_data*/
 # Release records: evaluation output, diagnostics, reference joblib
 model_somnus_1.0/
 # End-user drop point for recordings
