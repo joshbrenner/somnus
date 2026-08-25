@@ -67,9 +67,9 @@ label came from, and only human-sourced labels can become training targets.
 The performance loss on labelled epochs is minimized with a penalty that
 pulls the weights toward the existing model. We use a parameter λ,
 where "keep the shipped model" (λ→∞), and "train on my data
-alone" (λ→0). The default λ value is chosen by cross-validation on your recordings
-— so fine-tune versus retrain is decided by evidence. Adjust it at your risk -
-In fine-tuning tests on three subjects the base model handled poorly, accuracy with our method went from
+alone" (λ→0). The default λ value is chosen by cross-validation on your recordings,
+so fine-tune versus retrain is decided by evidence. Adjust it at your risk -
+in fine-tuning tests on three subjects that the base model handled poorly, accuracy with our method went from
 0.706 → 0.783, while training on those recordings alone (λ→0) scored 0.642, worse than not adapting at all.
 
 ## Performance
