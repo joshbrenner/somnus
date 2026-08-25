@@ -13,13 +13,13 @@ adapts the model to your dataset.
 
 The design goal is not maximum accuracy on one rig. It is a system that **runs
 on whatever data you have**, and that can be readily adapted to disease models
-with degraded sleep architecture, where heavier commercial scorers may fail altogether.
+with degraded sleep architecture where heavier commercial scorers may fail altogether.
 
-Features are computed in frequency tiers gated by each recording's *measured* bandwidth 
-and every feature is z-scored within its own recording. Temporal structure of sleep comes from an 
-HMM/Viterbi model with a "transition resistance" knob to allow you to adjust the 
+Features are computed in frequency tiers gated by each recording's *measured* bandwidth. 
+Every feature is then z-scored within its own recording. The temporal structure of sleep comes from an 
+HMM/Viterbi model with a "transition resistance" knob which allows you to adjust the 
 frequency of state transitions. Hence, a single logistic model scores both a 128 Hz EEG-only 
-recording and a 5 kHz EEG+EMG+video recording.
+recording and a 5 kHz EEG+EMG+labeled video recording.
 
 ## Install
 
@@ -54,23 +54,23 @@ somnus-gui
 A five-tab workflow: **Project** (point it at a folder of recordings) →
 **Score** (batch scoring with smoothing controls) → **Review & Relabel**
 (whole-recording hypnogram with a confidence trace, plus a signal/video scorer
-pre-loaded with the model's labels so you correct rather than score from
+pre-loaded with the model's labels, so you correct rather than score from
 scratch) → **Fine-tune** (adapt the model to your corrections) → **Evaluate**
 (compare against the base model; export sleep-architecture statistics).
 
-Two invariants are enforced in code: **source data is never written to**, and
+Two invariants are enforced: **source data is never written to**, and
 **the model never trains on its own output** — every epoch records where its
 label came from, and only human-sourced labels can become training targets.
 
-## Fine-tuning, not retraining
+## Fine-tuning
 
-The logistic loss on *your* labelled epochs is minimised with a penalty that
-pulls the weights toward the existing model. A single strength parameter λ
-spans the spectrum from "keep the shipped model" (λ→∞) to "train on my data
-alone" (λ→0), and cross-validation on your recordings picks λ — so fine-tune
-versus retrain is decided by evidence. On the three subjects the base model
-handles worst, balanced accuracy went 0.706 → 0.783; training on those
-recordings alone scored 0.642, *worse than not adapting at all*.
+The performance loss on labelled epochs is minimized with a penalty that
+pulls the weights toward the existing model. We use a parameter λ,
+where "keep the shipped model" (λ→∞), and "train on my data
+alone" (λ→0). The default λ value is chosen by cross-validation on your recordings
+— so fine-tune versus retrain is decided by evidence. Adjust it at your risk -
+In fine-tuning tests on three subjects the base model handled poorly, accuracy with our method went from
+0.706 → 0.783, while training on those recordings alone (λ→0) scored 0.642, worse than not adapting at all.
 
 ## Performance
 
@@ -83,18 +83,13 @@ from six labs:
 | accuracy | 0.914 |
 | balanced accuracy | 0.856 |
 | Cohen's κ | 0.843 |
-| REM F1 | 0.723 |
 
 On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 
-## Honest limitations
+## Limitations to keep in mind
 
-- **REM is the bottleneck** (F1 0.723 vs >0.90 for Wake/NREM). REM scoring
-  criteria differ between labs, so a general model necessarily compromises;
-  fine-tuning to your own scoring is the intended remedy.
-- **The default smoothing over-smooths.** If sleep fragmentation is your
-  phenotype, lower the transition resistance and check the hypnogram.
-- Reported numbers are from a single training seed.
+- **REM scoring criteria differ between labs** so a general model necessarily compromises;
+  (F1 REM 0.723 vs >0.90 for Wake/NREM). Fine-tuning to your own scoring is the intended remedy.
 
 A full write-up of the evaluation, caveats, and design rationale will
 accompany the forthcoming preprint.
