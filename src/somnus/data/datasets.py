@@ -380,7 +380,10 @@ def model_columns(df: pd.DataFrame, zscored: bool = False) -> list[str]:
 
 
 # --------------------------------------------------------------- assembly
-def build_training(seed: int = 0, rem_per_lab: int | None = None) -> None:
+def build_training(seed: int = 0, rem_per_lab: int | None = None,
+                   local_only: bool = False,
+                   only_labs: list[str] | None = None,
+                   mice_per_lab: int | None = None) -> None:
     rng = np.random.RandomState(seed)
 
     local = discover_local()
@@ -410,7 +413,17 @@ def build_training(seed: int = 0, rem_per_lab: int | None = None) -> None:
     for e in on:
         by_lab.setdefault(e["group"], []).append(e["subject"])
     labs_sorted = sorted(by_lab)
+    if only_labs:
+        missing = [l for l in only_labs if l not in by_lab]
+        if missing:
+            raise SystemExit(f"unknown lab(s) {missing}; have {labs_sorted}")
+        labs_sorted = [l for l in labs_sorted if l in only_labs]
     per_lab_target = dict(target)
+    if local_only:
+        # Public corpus contributes nothing to training; every public subject
+        # therefore lands in the test set.
+        per_lab_target = {s: 0 for s in STATES}
+        labs_sorted = []
     if rem_per_lab is not None:
         per_lab_target["REM"] = int(rem_per_lab)
     print(f"\nPer-lab share target (each of {len(labs_sorted)} public labs): "
@@ -421,13 +434,23 @@ def build_training(seed: int = 0, rem_per_lab: int | None = None) -> None:
     leftovers: list[pd.DataFrame] = []          # unused epochs, for top-up
     lab_report = {}
 
+    # With a mouse cap, split the lab's share evenly across the capped mice so
+    # every animal genuinely contributes (a long recording would otherwise
+    # fill the whole share alone). Any per-mouse shortfall is recovered from
+    # the same mice's leftovers in the reconciliation step below.
+    per_mouse = ({s: int(np.ceil(per_lab_target[s] / mice_per_lab))
+                  for s in STATES} if mice_per_lab else None)
+
     for lab in labs_sorted:
         subs = sorted(set(by_lab[lab]))
         order = list(rng.permutation(subs))
         got = {s: 0 for s in STATES}
         used = []
         for sub in order:
-            if all(got[s] >= per_lab_target[s] for s in STATES):
+            if mice_per_lab and len(used) >= mice_per_lab:
+                break
+            if not mice_per_lab and \
+                    all(got[s] >= per_lab_target[s] for s in STATES):
                 break
             sub_tables = []
             for e in [x for x in on if x["subject"] == sub]:
@@ -445,6 +468,8 @@ def build_training(seed: int = 0, rem_per_lab: int | None = None) -> None:
             train_subjects.append(str(sub))
             for s in STATES:
                 need = per_lab_target[s] - got[s]
+                if per_mouse:
+                    need = min(need, per_mouse[s])
                 pool = sdf[sdf["state"] == s]
                 if len(pool) == 0:
                     continue
@@ -464,7 +489,9 @@ def build_training(seed: int = 0, rem_per_lab: int | None = None) -> None:
             msg += f"  STILL SHORT {short} (lab exhausted)"
         print(msg)
 
-    on_matched = pd.concat(picks, ignore_index=True) if picks else pd.DataFrame()
+    # Empty fallback keeps local_lab's columns so the selection below works.
+    on_matched = (pd.concat(picks, ignore_index=True) if picks
+                  else local_lab.iloc[0:0])
 
     # ---- exact-target reconciliation ----
     # The public-corpus total per state is per_lab_target x n_labs. A lab that
@@ -546,8 +573,20 @@ def main() -> None:
     ap.add_argument("--rem-per-lab", type=int, default=None,
                     help="REM epochs each lab contributes (default: as many "
                          "as the local corpus has labelled)")
+    ap.add_argument("--local-only", action="store_true",
+                    help="train on the local corpus alone; the entire public "
+                         "corpus becomes the test set")
+    ap.add_argument("--labs", default=None,
+                    help="comma-separated public labs to draw from "
+                         "(default: all)")
+    ap.add_argument("--mice-per-lab", type=int, default=None,
+                    help="cap on mice per public lab; the lab share is split "
+                         "evenly across them")
     args = ap.parse_args()
-    build_training(args.seed, rem_per_lab=args.rem_per_lab)
+    build_training(args.seed, rem_per_lab=args.rem_per_lab,
+                   local_only=args.local_only,
+                   only_labs=args.labs.split(",") if args.labs else None,
+                   mice_per_lab=args.mice_per_lab)
 
 
 if __name__ == "__main__":
