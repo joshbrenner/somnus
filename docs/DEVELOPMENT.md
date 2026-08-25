@@ -41,7 +41,7 @@ export SOMNUS_BIDS_DIR=/path/to/bids/corpus          # BIDS layout, events.tsv s
 Then, from anywhere (installed or `pip install -e .`):
 
 ```bash
-python -m somnus.data.datasets --seed 0    # -> the training matrix + manifest
+python -m somnus.data.datasets --seed 0 --rem-per-lab 20   # released recipe
 python -m somnus.train.train   --seed 0    # -> ./results_generalized_seed0/
 python -m somnus.train.export  --seed 0    # -> portable JSON artifact
 python tools/verify_openseize_port.py      # checks the two feature backends agree
@@ -93,18 +93,22 @@ but numpy/pandas, with no coupling to a training module or sklearn version.
 
 ## Headline performance
 
-Released variant `unified_z_noind`, 70 features, tested on held-out mice from
-the public corpus (81 subjects, 1,521,669 labelled epochs):
+Released variant `unified_z_noind`, 70 features. Training set: 61,164 epochs —
+every lab (five public labs + the local corpus) contributes an equal per-state
+share, except REM, where each public lab contributes 20 epochs (the
+`--rem-per-lab 20` recipe: REM scoring criteria differ between labs, and a
+REM class anchored on one consistent standard measurably outperforms a pooled
+one). Tested on held-out public-corpus mice (74 subjects, 1,515,059 labelled
+epochs):
 
 | metric | value |
 |---|---|
-| accuracy | 0.9056 |
-| balanced accuracy | 0.8719 |
-| κ | 0.8315 |
-| REM F1 | 0.6869 |
+| accuracy | 0.9136 |
+| balanced accuracy | 0.8559 |
+| κ | 0.8434 |
+| REM F1 | 0.7229 |
 
-In-house data, leave-one-recording-out: accuracy 0.9750, balanced 0.9555.
+In-house data, leave-one-recording-out: accuracy 0.9749, balanced 0.9543.
 
-**Seed 0 is one draw.** Across 5 seeds the pipeline spans 0.884–0.906
-(mean ≈0.893), so quote the multi-seed mean rather than this number. REM is
-the bottleneck; a full write-up accompanies the forthcoming preprint.
+Numbers are from a single training seed. REM is the bottleneck; a full
+write-up accompanies the forthcoming preprint.

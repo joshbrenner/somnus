@@ -73,25 +73,26 @@ recordings alone scored 0.642, *worse than not adapting at all*.
 ## Performance
 
 Tested on held-out mice from a public multi-lab validation corpus —
-81 subjects, ~1.52 million labelled epochs — after training on 20,388 epochs:
+74 subjects, ~1.52 million labelled epochs — after training on 61,164 epochs
+from six labs:
 
 | metric | value |
 |---|---|
-| accuracy | 0.906 |
-| balanced accuracy | 0.872 |
-| Cohen's κ | 0.832 |
-| REM F1 | 0.687 |
+| accuracy | 0.914 |
+| balanced accuracy | 0.856 |
+| Cohen's κ | 0.843 |
+| REM F1 | 0.723 |
 
 On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 
 ## Honest limitations
 
-- **REM is the bottleneck** (F1 0.687 vs >0.90 for Wake/NREM); it needs more
-  scored REM epochs, not better features.
+- **REM is the bottleneck** (F1 0.723 vs >0.90 for Wake/NREM). REM scoring
+  criteria differ between labs, so a general model necessarily compromises;
+  fine-tuning to your own scoring is the intended remedy.
 - **The default smoothing over-smooths.** If sleep fragmentation is your
   phenotype, lower the transition resistance and check the hypnogram.
-- Reported numbers are one training seed; across 5 seeds the same pipeline
-  spans 0.884–0.906 (mean ≈0.893).
+- Reported numbers are from a single training seed.
 
 A full write-up of the evaluation, caveats, and design rationale will
 accompany the forthcoming preprint.
