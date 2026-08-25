@@ -2,17 +2,22 @@
 
 DESIGN
 ------
-Training set = ALL usable recordings from the local corpus + a per-state
-count-matched sample drawn from a small, lab-stratified pool of subjects from
-the public BIDS corpus. "Count-matched" means: for each state, take as many
-public-corpus epochs as the local corpus contributes for that state, so neither
-dataset dominates. Natural state proportions are preserved (Wake >> REM); the
+Training set = ALL usable recordings from the local corpus + a lab-stratified
+sample from the public BIDS corpus, matched PER LAB: the local corpus is
+treated as one lab among many, and every lab (each public lab, and the local
+one) contributes the same per-state share -- the share being what the local
+corpus has labelled. With N public labs the training set therefore holds
+(N+1) x local_count epochs of each state, so no single lab dominates any
+class, and minority states (REM) get N+1 times the epochs a corpus-level
+match would allow. Natural state proportions are preserved (Wake >> REM); the
 classifier handles that with balanced class weights rather than by discarding
-data.
+data. `--rem-per-lab` can raise the REM share beyond what the local corpus
+supplies, for feeding the minority class from REM-rich public labs.
 
-The public-corpus training pool is ONE MOUSE PER LAB, so training sees every
-filtering regime and mains condition in the corpus -- including a lab whose EEG
-is lowpass-filtered at ~25 Hz and therefore exercises the missing-tier path.
+Public labs start from ONE MOUSE PER LAB (recruiting more only to fill the
+share), so training sees every filtering regime and mains condition in the
+corpus -- including a lab whose EEG is lowpass-filtered at ~25 Hz and
+therefore exercises the missing-tier path.
 
 Every remaining public-corpus subject is reserved for test. Test features are never
 materialised into one giant table: `iter_test_recordings()` yields one recording
@@ -375,7 +380,7 @@ def model_columns(df: pd.DataFrame, zscored: bool = False) -> list[str]:
 
 
 # --------------------------------------------------------------- assembly
-def build_training(seed: int = 0) -> None:
+def build_training(seed: int = 0, rem_per_lab: int | None = None) -> None:
     rng = np.random.RandomState(seed)
 
     local = discover_local()
@@ -391,20 +396,25 @@ def build_training(seed: int = 0) -> None:
     local_all = pd.concat(local_tables, ignore_index=True)
     local_lab = local_all[local_all["state"].notna()]
     target = {s: int((local_lab["state"] == s).sum()) for s in STATES}
-    print(f"\nLocal labelled epochs (the matching target): {target}")
+    print(f"\nLocal labelled epochs (the per-lab share): {target}")
 
     # ---- lab-stratified public-corpus training pool ----
-    # Each lab aims to contribute an equal share. Labs whose recordings are too
-    # short to cover that share recruit additional mice from the SAME lab until
-    # the share is met. Every recruited mouse is then excluded from the test set.
+    # The local corpus counts as one lab; EVERY lab contributes the same
+    # per-state share (what the local corpus has labelled), so with N public
+    # labs the training set holds (N+1) x share epochs of each state. Labs
+    # whose recordings are too short to cover the share recruit additional
+    # mice from the SAME lab until it is met. Every recruited mouse is then
+    # excluded from the test set.
     on = discover_bids()
     by_lab: dict[str, list[str]] = {}
     for e in on:
         by_lab.setdefault(e["group"], []).append(e["subject"])
     labs_sorted = sorted(by_lab)
-    per_lab_target = {s: int(np.ceil(target[s] / len(labs_sorted)))
-                      for s in STATES}
-    print(f"\nPublic-corpus per-lab share target: {per_lab_target}")
+    per_lab_target = dict(target)
+    if rem_per_lab is not None:
+        per_lab_target["REM"] = int(rem_per_lab)
+    print(f"\nPer-lab share target (each of {len(labs_sorted)} public labs): "
+          f"{per_lab_target}")
 
     train_subjects: list[str] = []
     picks: list[pd.DataFrame] = []
@@ -457,11 +467,15 @@ def build_training(seed: int = 0) -> None:
     on_matched = pd.concat(picks, ignore_index=True) if picks else pd.DataFrame()
 
     # ---- exact-target reconciliation ----
+    # The public-corpus total per state is per_lab_target x n_labs. A lab that
+    # ran out of epochs is topped up from other labs' unused epochs, trading a
+    # little lab-balance for the class count.
+    public_target = {s: per_lab_target[s] * len(labs_sorted) for s in STATES}
     spare = pd.concat(leftovers, ignore_index=True) if leftovers else pd.DataFrame()
     final = []
     for s in STATES:
         cur = on_matched[on_matched["state"] == s]
-        need = target[s] - len(cur)
+        need = public_target[s] - len(cur)
         if need > 0 and len(spare):
             pool = spare[spare["state"] == s]
             take = int(min(need, len(pool)))
@@ -469,13 +483,13 @@ def build_training(seed: int = 0) -> None:
                 cur = pd.concat([cur, pool.iloc[rng.choice(len(pool), take,
                                                            replace=False)]])
                 print(f"  topped up {s} with {take} epochs from already-used mice")
-        if len(cur) > target[s]:
-            cur = cur.iloc[rng.choice(len(cur), target[s], replace=False)]
-        if len(cur) < target[s]:
+        if len(cur) > public_target[s]:
+            cur = cur.iloc[rng.choice(len(cur), public_target[s], replace=False)]
+        if len(cur) < public_target[s]:
             print(f"  WARNING: {s} still short "
-                  f"({len(cur)}/{target[s]}) after exhausting the pool")
+                  f"({len(cur)}/{public_target[s]}) after exhausting the pool")
         final.append(cur)
-        print(f"  matched {s}: {len(cur)}/{target[s]} "
+        print(f"  matched {s}: {len(cur)}/{public_target[s]} "
               f"from {cur['subject'].nunique()} mice")
     on_matched = pd.concat(final, ignore_index=True)
 
@@ -489,13 +503,16 @@ def build_training(seed: int = 0) -> None:
                             if e["subject"] not in set(train_subjects)})
     manifest = {
         "seed": seed,
+        "matching": "per-lab: local corpus counts as one lab; every lab "
+                    "contributes the same per-state share",
         "local_recordings": [e["recording"] for e in local],
         "bids_train_subjects": sorted(set(train_subjects)),
         "bids_test_subjects": test_subjects,
         "n_bids_test_subjects": len(test_subjects),
         "per_lab_share_target": per_lab_target,
+        "public_target": public_target,
         "per_lab_report": lab_report,
-        "match_target": target,
+        "local_share": target,
         "train_counts_by_dataset": {
             d: {s: int(((train["dataset"] == d) & (train["state"] == s)).sum())
                 for s in STATES} for d in ("local", "bids")},
@@ -526,8 +543,11 @@ def iter_test_recordings(train_subjects: set[str]):
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build the cross-dataset training set.")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--rem-per-lab", type=int, default=None,
+                    help="REM epochs each lab contributes (default: as many "
+                         "as the local corpus has labelled)")
     args = ap.parse_args()
-    build_training(args.seed)
+    build_training(args.seed, rem_per_lab=args.rem_per_lab)
 
 
 if __name__ == "__main__":
