@@ -1,11 +1,7 @@
 # Somnus — developer / pipeline reference (v1.0)
 
 Logistic-regression scorer for **Wake / NREM / REM** on 4 s epochs of mouse
-EEG/EMG (+ optional video-derived velocity), with an HMM/Viterbi temporal decode.
-
-An invariant enforced throughout: no source recording (EDF, scored CSV, video,
-tracking pickle) is ever modified or moved — all output goes to the invoking
-or project directory.
+EEG/EMG (+ optional video-derived velocity), with an HMM/Viterbi model for temporal smoothing.
 
 Developed on Python 3.13 (openseize, mne, scikit-learn, pandas, scipy,
 matplotlib, joblib, PySide6, opencv-python, av); also runs on 3.10 without
@@ -55,7 +51,6 @@ python tools/verify_openseize_port.py      # checks the two feature backends agr
 | `somnus.train.train` | Logistic regression + HMM decode, leave-one-recording-out CV, metrics, plots. |
 | `somnus.train.export` | Writes the dependency-free JSON artifact. |
 | `somnus.train.finetune` | Anchored fine-tuning. |
-| `tools/verify_openseize_port.py` | Proves the openseize and scipy backends produce the same features. |
 
 ### Feature backend
 
@@ -95,11 +90,7 @@ but numpy/pandas, with no coupling to a training module or sklearn version.
 
 Released variant `unified_z_noind`, 70 features. Training set: 61,164 epochs —
 every lab (five public labs + the local corpus) contributes an equal per-state
-share, except REM, where each public lab contributes 20 epochs (the
-`--rem-per-lab 20` recipe: REM scoring criteria differ between labs, and a
-REM class anchored on one consistent standard measurably outperforms a pooled
-one). Tested on held-out public-corpus mice (74 subjects, 1,515,059 labelled
-epochs):
+share, except REM. Tested on held-out public-corpus mice (74 subjects, 1,515,059 labelled epochs):
 
 | metric | value |
 |---|---|
@@ -110,5 +101,4 @@ epochs):
 
 In-house data, leave-one-recording-out: accuracy 0.9749, balanced 0.9543.
 
-Numbers are from a single training seed. REM is the bottleneck; a full
-write-up accompanies the forthcoming preprint.
+A full write-up accompanies the forthcoming preprint.
