@@ -4,23 +4,18 @@ from somnus.scorer.signal_utils import get_nice_number
 
 WINDOW_NAME = "Sleep Scorer Validator"
 
-# Timeline colours. The first five are things you can paint; the last two are
-# only ever displayed, never painted.
 COLORS = {
     # --- paintable: these are brushes, and each is a column in the scored CSV
     'Wake': (50, 200, 50),
     'NREM': (200, 100, 50),
     'REM': (50, 50, 200),
     'Artifact': (0, 200, 200),      # bad signal: exclude this epoch
-    'Unclear': (200, 50, 200),      # ambiguous physiology: exclude this epoch
+    'Unclear': (200, 50, 200),      # ambiguous physiology: exclude this epoch (or just leave unscored)
     # --- display only: worked out while drawing, never painted and never stored
     'Unknown': (50, 50, 50),        # nothing scored here yet
     'HMM_Smoothed': (230, 200, 60),  # label came from smoothing, not the model
 }
 
-# The states the bout navigation buttons step between. Artifact and Unclear are
-# excluded because they mark epochs to throw away rather than sleep to look at,
-# and Unknown is not a state at all -- just the absence of one.
 NAV_LABELS = ['Wake', 'NREM', 'REM']
 
 MENU_HEADERS = {
@@ -57,8 +52,7 @@ def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
     """Draw what the model believes about the stretch on screen.
 
     The average probability of each state, how confident it was, and how many
-    visible epochs it was unsure about. Shows a hint instead when the scorer was
-    opened without the model's output.
+    visible epochs it was unsure about. 
     """
     img = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.rectangle(img, (0, 0), (w, h), (20, 20, 20), -1)
@@ -140,8 +134,7 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
         x2 = int(((bin_start + state.bin_step - window_start_sec) / window_duration) * w)
 
         color = COLORS.get(bin_state, (50, 50, 50))
-        # Epochs the user has confirmed are drawn again more solidly: same
-        # colour, so the state still reads at a glance, but obviously checked.
+        # Epochs the user has confirmed are drawn again heavier
         if row.get('Confirmed', 0):
             confirmed_spans.append((x1, x2, color))
             continue
@@ -155,8 +148,7 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
             cv2.rectangle(ov2, (max(0, x1), 0), (min(w, x2), h), color, -1)
         cv2.addWeighted(ov2, 0.60, img, 0.40, 0, img)
 
-    # Mark epochs the smoothing changed with a thin hatch along the top, so it
-    # annotates the state colour rather than hiding it.
+    # Mark epochs the smoothing changed with a thin hatch along the top
     if getattr(state, 'review_meta', None) is not None:
         for t0, t1 in state.smoothed_spans(window_start_sec, end_time_sec):
             x1 = int(((t0 - window_start_sec) / window_duration) * w)
@@ -321,8 +313,7 @@ def draw_sidebar(state, h, w_side):
             y += 6
 
             # Jumps forward through the recording to the next epoch the model
-            # was unsure about. Epochs the smoothing changed are skipped; they
-            # have their own colour already.
+            # was unsure about. 
             bx1, bx2 = 10, w_side - 10
             by1, by2 = y, y + 34
             state.uncertain_btn = (bx1, by1, bx2, by2)
