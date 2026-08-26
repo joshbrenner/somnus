@@ -72,33 +72,6 @@ passing the file.
 Cameras drop frames, so assuming a constant frame rate can misplace positions by
 minutes; if no timestamps file is found, Somnus requires confirmation.
 
-In the GUI you are asked once, before scoring starts, to either declare the
-video's frame rate or score those recordings without video. The choice is
-remembered per recording, and the warning is not repeated. From Python nothing
-is assumed on your behalf — pass the frame rate explicitly:
-
-```python
-df = featurize(entry, fps=30.0)          # accept a constant frame rate
-```
-
-A timestamps file that *is* present but has the wrong number of rows is a
-different matter and stays a hard error: it means the coordinates and the times
-come from different videos. That usually happens when tracking was run on a
-re-encoded or cropped copy, which has its own frame count and needs its own
-timestamps file — `fps` will not override it.
-
-**Optional: report velocity in mm/s.** Pass `mm_per_px` (or fill the field in
-the GUI dialog) to convert tracked pixels to millimetres:
-
-```python
-df = featurize(entry, mm_per_px=0.264)   # velocity in mm/s instead of px/s
-```
-
-This changes only the reported `velocity` and `log_velocity`;
-`df.attrs["meta"]["velocity_unit"]` records which unit was used. It does not
-change scoring — the model reads velocity z-scored within each recording, and a
-unit change is a constant offset the z-score removes exactly.
-
 ## The desktop application
 
 ```bash
