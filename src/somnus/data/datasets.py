@@ -195,8 +195,9 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
 
 
 def resolve_frame_times(base: str, n_frames: int, duration: float,
-                        meta: dict, search_dir: str) -> tuple[np.ndarray, str]:
-    """True per-frame times for a coordinate array. Raises if unavailable.
+                        meta: dict, search_dir: str,
+                        fps: float | None = None) -> tuple[np.ndarray, str]:
+    """Per-frame times for a coordinate array. Raises if they cannot be trusted.
 
     Frames can be dropped during acquisition, making timing irregular; assuming a
     constant fps then misplaces frames by minutes. A timestamp file is accepted
@@ -206,9 +207,12 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
 
     `search_dir` is searched and nothing else. No parent/sibling lookup: a stale
     timestamps file from another folder would pair positions with the wrong times
-    and corrupt velocity silently. If the coordinates are here but their
-    timestamps are not, that is an incomplete dataset and an error, not something
-    to work around.
+    and corrupt velocity silently.
+
+    `fps` is the caller's declaration that the video really does run at a fixed
+    rate. It is used ONLY when no timestamps file is present at all, and it is
+    never inferred: a timestamps file that exists but has the wrong length is
+    evidence of a genuine mismatch, so that stays an error.
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
     lengths = []
@@ -223,15 +227,25 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
         return np.arange(n_frames, dtype=float) / float(sr), f"constant {sr:g} fps"
 
     if lengths:
+        # A timestamps file IS here and disagrees: that is a real mismatch (for
+        # instance tracking run on a re-encoded copy of the video), not a
+        # missing file, so a declared fps must not paper over it.
         detail = ", ".join(f"{n} has {k} frames" for n, k in lengths)
         raise FileNotFoundError(
             f"{base}: tracking has {n_frames} frames but no timestamps file in "
             f"{search_dir} matches that length ({detail}). Frame timing cannot be "
             f"trusted, so velocity is refused rather than guessed.")
+
+    if fps:
+        return np.arange(n_frames, dtype=float) / float(fps), f"declared {fps:g} fps"
+
     raise FileNotFoundError(
         f"{base}: found tracking coordinates but no '*timestamps.npy' in "
-        f"{search_dir}. Put the matching timestamps file alongside the "
-        f"coordinates, or remove the coordinates to score without velocity.")
+        f"{search_dir}. Frame timing cannot be trusted, so velocity is refused "
+        f"rather than guessed. Put the matching timestamps file alongside the "
+        f"coordinates, pass fps=<frames per second> to featurize() to accept a "
+        f"constant frame rate, or omit the coordinates to score without "
+        f"velocity.")
 
 
 # ------------------------------------------------------------- EEG selection
@@ -253,12 +267,23 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
 
 
 # ------------------------------------------------------------- featurization
-def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
+def featurize(entry: dict, probe_seconds: float = 900.0,
+              fps: float | None = None,
+              mm_per_px: float | None = None) -> pd.DataFrame:
     """Load one recording and return its per-epoch feature table.
 
     Bandwidth is measured from the data itself (separately for EEG and EMG), and
     unsupported tiers are emitted as NaN with their indicator set to 0.
+
+    `fps` declares a constant video frame rate, used only when the tracking has
+    no timestamps file at all -- see resolve_frame_times(). `mm_per_px` converts
+    tracked positions to millimetres, so `velocity` is reported in mm/s instead
+    of px/s; it does not change what the model sees, because velocity is
+    z-scored within recording and a constant scale cancels exactly. Both also
+    accept an `entry` key of the same name.
     """
+    fps = fps if fps is not None else entry.get("fps")
+    mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
     raw = mne.io.read_raw_edf(entry["edf"], preload=False)
     sfreq = float(raw.info["sfreq"])
     names = raw.ch_names
@@ -292,13 +317,27 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
 
     # --- velocity (only if the recording has video tracking) ---
     vel_src = "none"
+    vel_unit = "px/s"
     if entry.get("pkl"):
         coords, meta = load_coordinates(entry["pkl"])
         # search only the folder the coordinates came from
         t, vel_src = resolve_frame_times(entry["recording"], len(coords),
                                          raw.n_times / sfreq, meta,
-                                         os.path.dirname(entry["pkl"]))
-        df = pd.concat([df, H.velocity_features(coords, t, n_ep)], axis=1)
+                                         os.path.dirname(entry["pkl"]), fps=fps)
+        vel = H.velocity_features(coords, t, n_ep)
+        if mm_per_px:
+            # Convert after the feature, not before it. `log_velocity` is
+            # log10(v + eps) with a fixed eps, so rescaling the coordinates
+            # would move it by log10(k) at high speed but by much less near
+            # zero -- exactly where a sleeping animal sits. Shifting the log by
+            # log10(k) instead is the same as scaling eps with the units, which
+            # keeps the change an exact constant offset and therefore invisible
+            # to the within-recording z-score the model actually reads.
+            k = float(mm_per_px)
+            vel["velocity"] = vel["velocity"] * k
+            vel["log_velocity"] = vel["log_velocity"] + np.log10(k)
+            vel_unit = "mm/s"
+        df = pd.concat([df, vel], axis=1)
     else:
         df = pd.concat([df, H.velocity_features(None, None, n_ep)], axis=1)
 
@@ -350,6 +389,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
         "sfreq": sfreq, "eeg_edge_hz": round(eeg_edge, 1),
         "emg_edge_hz": round(emg_edge, 1), "tiers": sorted(tiers),
         "emg_bands": sorted(emg_bands), "velocity_source": vel_src,
+        "velocity_unit": vel_unit,
         "eeg_channel": names[best], "emg_channel": names[emg_i],
         "n_epochs": int(n_ep),
     }

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
@@ -42,6 +43,45 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# ------------------------------------------------------------------ user config
+# Settings that belong to the person, not to a project: chiefly whether they
+# have already been warned that a declared frame rate is less trustworthy than
+# real per-frame timestamps. Asking once is the point, so this lives outside any
+# single project directory.
+def user_config_path() -> str:
+    """Location of the per-user settings file, honoring the platform's convention."""
+    if sys.platform == "win32":
+        root = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        root = (os.environ.get("XDG_CONFIG_HOME")
+                or os.path.join(os.path.expanduser("~"), ".config"))
+    return os.path.join(root, "somnus", "config.json")
+
+
+def load_user_config() -> dict:
+    """Read the per-user settings; an unreadable or absent file means defaults."""
+    try:
+        with open(user_config_path()) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_user_config(**values) -> None:
+    """Merge `values` into the per-user settings. Never raises: these are
+    conveniences, and failing to record one must not break scoring."""
+    cfg = load_user_config()
+    cfg.update(values)
+    path = user_config_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(cfg, fh, indent=2)
+    except OSError:
+        pass
+
+
 # --------------------------------------------------------------------- project
 @dataclass
 class Recording:
@@ -53,16 +93,31 @@ class Recording:
     video: str | None = None
     selected: bool = False             # ticked in the Project tab
     notes: str = ""
+    fps: float | None = None           # declared frame rate, if no timestamps
+    mm_per_px: float | None = None     # optional, reports velocity in mm/s
+    skip_video: bool = False           # user chose to score without velocity
 
     @property
     def has_velocity(self) -> bool:
-        """Velocity needs positions AND trustworthy frame times.
+        """Velocity needs positions AND a trustworthy time for every frame.
 
-        Cameras can drop frames, so assuming a constant fps misplaces positions
-        by minutes. Without timestamps the feature is withheld rather than
-        guessed.
+        Cameras can drop frames, so assuming a constant rate misplaces positions
+        by minutes. Timestamps supply the true times; a frame rate the user has
+        declared is accepted in their place, but nothing is guessed.
         """
-        return bool(self.coords) and bool(self.timestamps)
+        if self.skip_video or not self.coords:
+            return False
+        return bool(self.timestamps) or bool(self.fps)
+
+    @property
+    def needs_frame_times(self) -> bool:
+        """Tracking is present but there is no timestamps file to go with it.
+
+        True until the user either declares a frame rate or opts out of video
+        for this recording.
+        """
+        return (bool(self.coords) and not self.timestamps
+                and not self.fps and not self.skip_video)
 
 
 @dataclass
@@ -365,8 +420,10 @@ def featurize(recording: Recording, cache: str | None = None) -> pd.DataFrame:
     entry = {"recording": recording.name, "edf": recording.edf,
              "dataset": "user", "group": "user",
              "subject": recording.name.split("_")[0],
-             "scored": recording.scored, "pkl": recording.coords}
-    df = B.featurize(entry)
+             "scored": recording.scored,
+             "pkl": None if recording.skip_video else recording.coords}
+    df = B.featurize(entry, fps=recording.fps,
+                     mm_per_px=recording.mm_per_px)
     if cache:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         df.to_csv(cache, index=False)

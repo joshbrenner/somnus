@@ -28,11 +28,11 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+    QHeaderView, QInputDialog, QLabel, QListWidget, QMainWindow, QMessageBox,
+    QPlainTextEdit, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from somnus.gui import core
@@ -86,6 +86,77 @@ class TaskRunner:
             sig.connect(self.thread.quit)
         self.thread.start()
         return True
+
+
+# --------------------------------------------------------------- frame times
+class FrameTimesDialog(QDialog):
+    """Asks for a video frame rate when tracking has arrived without timestamps.
+
+    Shown on the GUI thread before any scoring starts, because featurizing runs
+    on a worker thread where a prompt would block invisibly.
+    """
+
+    USE_FPS, NO_VIDEO = 1, 2
+
+    def __init__(self, parent, names: list[str], warn: bool = True):
+        super().__init__(parent)
+        self.setWindowTitle("Frame times not found")
+        lay = QVBoxLayout(self)
+
+        listed = "\n".join(f"    {n}" for n in names[:12])
+        if len(names) > 12:
+            listed += f"\n    ... and {len(names) - 12} more"
+        lay.addWidget(QLabel(
+            f"<b>{len(names)} recording(s) have tracking but no matching "
+            f"timestamps file:</b>"))
+        box = QPlainTextEdit(listed)
+        box.setReadOnly(True)
+        box.setMaximumHeight(120)
+        lay.addWidget(box)
+
+        if warn:
+            lay.addWidget(QLabel(
+                "Cameras drop frames. Without per-frame timestamps Somnus has to "
+                "assume the video<br>runs at a constant rate, and where it does "
+                "not, positions are misplaced &mdash; by<br>minutes over a long "
+                "recording. Locomotion from these recordings may be<br>"
+                "<b>unreliable</b>. EEG and EMG are unaffected."))
+
+        form = QFormLayout()
+        self.sp_fps = QDoubleSpinBox()
+        self.sp_fps.setRange(0.1, 1000.0)
+        self.sp_fps.setDecimals(3)
+        self.sp_fps.setValue(30.0)
+        self.sp_fps.setSuffix(" fps")
+        self.sp_fps.setToolTip("The frame rate of the video the tracking came "
+                               "from. Required to use these recordings' video.")
+        form.addRow("Video frame rate:", self.sp_fps)
+
+        self.sp_mm = QDoubleSpinBox()
+        self.sp_mm.setRange(0.0, 1000.0)
+        self.sp_mm.setDecimals(4)
+        self.sp_mm.setValue(0.0)
+        self.sp_mm.setSpecialValueText("(leave blank for pixels)")
+        self.sp_mm.setToolTip("Optional. If given, velocity is reported in mm/s "
+                              "instead of px/s. Does not change scoring.")
+        form.addRow("mm per pixel:", self.sp_mm)
+        lay.addLayout(form)
+
+        self.cb_quiet = QCheckBox("Don't warn me about this again")
+        lay.addWidget(self.cb_quiet)
+
+        bb = QDialogButtonBox()
+        b_use = bb.addButton("Use this frame rate", QDialogButtonBox.AcceptRole)
+        b_skip = bb.addButton("Score without video", QDialogButtonBox.ActionRole)
+        bb.addButton(QDialogButtonBox.Cancel)
+        b_use.clicked.connect(lambda: self.done(self.USE_FPS))
+        b_skip.clicked.connect(lambda: self.done(self.NO_VIDEO))
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def values(self) -> tuple[float, float | None]:
+        mm = float(self.sp_mm.value())
+        return float(self.sp_fps.value()), (mm if mm > 0 else None)
 
 
 # ------------------------------------------------------------------- hypnogram
@@ -559,6 +630,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing selected",
                                     "Tick recordings on the Project tab first.")
             return
+        if not self.ensure_frame_times(queue):
+            return
         name = self.cmb_evalmodel.currentText()
         other = getattr(self, "_eval_models", {}).get(name)
         if not other:
@@ -625,6 +698,8 @@ class MainWindow(QMainWindow):
         if not queue or self.runner.busy():
             QMessageBox.information(self, "Nothing selected",
                                     "Tick recordings on the Project tab first.")
+            return
+        if not self.ensure_frame_times(queue):
             return
         proj = self.project
         model = proj.model
@@ -817,6 +892,46 @@ class MainWindow(QMainWindow):
         return [r for r in self.project.recordings if r.selected] \
             if self.project else []
 
+    def ensure_frame_times(self, queue: list[core.Recording]) -> bool:
+        """Settle how recordings lacking frame times are handled, before scoring.
+
+        Runs on the GUI thread. Returns False if the user cancelled, in which
+        case no work should start. The warning is shown once per user; the frame
+        rate is still asked for whenever it is not already known, because it is
+        something only the user can supply.
+        """
+        need = [r for r in queue if r.needs_frame_times]
+        if not need:
+            return True
+
+        warned = bool(core.load_user_config().get("warned_missing_frame_times"))
+        dlg = FrameTimesDialog(self, [r.name for r in need], warn=not warned)
+        code = dlg.exec()
+
+        if code == FrameTimesDialog.USE_FPS:
+            fps, mm = dlg.values()
+            for r in need:
+                r.fps, r.mm_per_px, r.skip_video = fps, mm, False
+            self.log(f"WARNING: no frame times for {len(need)} recording(s); "
+                     f"assuming a constant {fps:g} fps. If the camera dropped "
+                     f"frames, locomotion from these may be unreliable "
+                     f"(velocity in {'mm/s' if mm else 'px/s'}).")
+            for r in need:
+                self.log(f"    {r.name}")
+        elif code == FrameTimesDialog.NO_VIDEO:
+            for r in need:
+                r.skip_video, r.fps = True, None
+            self.log(f"Scoring {len(need)} recording(s) without video; "
+                     f"EEG/EMG only.")
+        else:
+            return False
+
+        if dlg.cb_quiet.isChecked():
+            core.save_user_config(warned_missing_frame_times=True)
+        self.project.save()
+        self.refresh_project()
+        return True
+
     def _selected(self) -> core.Recording | None:
         """The row the cursor is on (used for Review, which is one at a time)."""
         rows = {i.row() for i in self.tbl.selectedIndexes()}
@@ -850,6 +965,8 @@ class MainWindow(QMainWindow):
                 "Tick one or more recordings on the Project tab first.")
             return
         if self.runner.busy():
+            return
+        if not self.ensure_frame_times(queue):
             return
         decode = self.cb_decode.isChecked()
         stick = float(self.sp_stick.value())
@@ -1068,6 +1185,8 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------- fine-tune
     def on_finetune(self):
         if not self.project or self.runner.busy():
+            return
+        if not self.ensure_frame_times(self.checked()):
             return
         proj = self.project
         model = proj.model
