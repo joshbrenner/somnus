@@ -11,9 +11,7 @@ COLORS = {
     'Artifact': (0, 200, 200),
     'Unclear': (200, 50, 200),
     'Unknown': (50, 50, 50),
-    # Epochs whose label the smoothing changed. Coloured separately so they can
-    # be checked, since smoothing can swallow a real short bout, but not treated
-    # as uncertain -- that is a different thing.
+    # Epochs whose label the smoothing changed.
     'HMM_Smoothed': (230, 200, 60),
 }
 
