@@ -1,11 +1,10 @@
 """Load one recording and turn it into the per-epoch feature table.
 
-`featurize()` is the entry point: give it an EDF (plus, optionally, a scoring
-file and video tracking) and it returns the table `somnus.predict.predict()`
-consumes. Bandwidth is measured from the data itself -- separately for EEG and
-EMG -- and tiers the recording cannot support are emitted as NaN with their
-availability indicator set to 0, so one model scores recordings of very
-different quality without retraining.
+`featurize()` is the entry point: give it an EDF, plus optionally a scoring file
+and video tracking, and it returns the table `somnus.predict.predict()` reads.
+What the recording can actually measure is worked out from the data itself, and
+anything beyond that is left blank, so one model handles recordings of very
+different quality.
 
 An `entry` is a plain dict:
 
@@ -48,14 +47,9 @@ STATES = ["Wake", "NREM", "REM"]
 
 
 # ---- model feature layout ---------------------------------------------------
-# NOTE: `delta_index` is deliberately NOT a model input. By construction
-#   delta_index = (delta - (t1 - delta)) / t1 = 2 * delta_rel - 1,
-# an exact affine transform of delta_rel. For a linear model with an intercept
-# the two are linearly dependent, and after within-recording z-scoring they
-# become the *identical* column, which leaves the design matrix rank-deficient
-# and the fitted coefficients unidentifiable. It carries no information that
-# delta_rel does not. It is still emitted in the epoch table for plotting; it is
-# simply not fed to the classifier.
+# `delta_index` is deliberately NOT given to the model. It is just delta_rel
+# rescaled, so the two say exactly the same thing, and feeding both makes the
+# fitted weights arbitrary. It is still computed for plotting.
 UNIVERSAL = ["delta_rel", "theta_rel", "alpha_rel", "beta_rel",
              "theta_delta_log", "t1_power_log_z", "emg_low_log_z"]
 # optional block -> (columns, indicator name)
@@ -72,6 +66,11 @@ CONTEXT_WINDOWS = (3, 15)
 
 # ------------------------------------------------------------ pickle loading
 def _pathlib_shim() -> None:
+    """Let pickles written by older Python versions still load.
+
+    Some tracking files were saved when file paths lived elsewhere in the
+    standard library. This puts them back where the pickle expects to find them.
+    """
     if "pathlib._local" in sys.modules:
         return
     import pathlib
@@ -83,7 +82,15 @@ def _pathlib_shim() -> None:
 
 
 class _SafeUnpickler(pickle.Unpickler):
+    """Reads a tracking pickle even when it mentions software you do not have.
+
+    Files often carry references to the tool that wrote them. Anything that
+    cannot be found is replaced by a harmless empty stand-in, so the
+    coordinates still load.
+    """
+
     def find_class(self, module, name):
+        """Return the requested class, or a placeholder if it is unavailable."""
         try:
             return super().find_class(module, name)
         except Exception:
@@ -95,10 +102,10 @@ CENTROID_BODYPART = "mouse_center"
 
 
 def _xy_from_table(df: pd.DataFrame, path: str) -> np.ndarray:
-    """(n_frames, 2) centroid from a tracking table.
+    """Pull one x/y position per frame out of a tracking table.
 
-    Handles a DeepLabCut export (a `scorer`/`bodyparts`/`coords` column
-    MultiIndex) and a plain table with `x` and `y` columns.
+    Understands a DeepLabCut export, which carries many bodyparts, and a plain
+    table with `x` and `y` columns.
     """
     if isinstance(df.columns, pd.MultiIndex):
         names = list(df.columns.names)
@@ -197,22 +204,20 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
 def resolve_frame_times(base: str, n_frames: int, duration: float,
                         meta: dict, search_dir: str,
                         fps: float | None = None) -> tuple[np.ndarray, str]:
-    """Per-frame times for a coordinate array. Raises if they cannot be trusted.
+    """Find the true time of every video frame. Raises if it cannot be trusted.
 
-    Frames can be dropped during acquisition, making timing irregular; assuming a
-    constant fps then misplaces frames by minutes. A timestamp file is accepted
-    only if its length matches the coordinate array EXACTLY, or if the tracking
-    metadata declares a constant rate consistent with the recording duration
-    (the `*_cropped_ds` re-encodes).
+    Cameras drop frames, so the gaps between them are uneven and assuming a
+    fixed rate would misplace positions by minutes. A timestamps file is
+    accepted only if it has exactly one entry per tracked frame.
 
-    `search_dir` is searched and nothing else. No parent/sibling lookup: a stale
-    timestamps file from another folder would pair positions with the wrong times
-    and corrupt velocity silently.
+    Only the folder the coordinates came from is searched. Picking up a
+    timestamps file from anywhere else risks pairing positions with the wrong
+    times, which would corrupt movement silently.
 
-    `fps` is the caller's declaration that the video really does run at a fixed
-    rate. It is used ONLY when no timestamps file is present at all, and it is
-    never inferred: a timestamps file that exists but has the wrong length is
-    evidence of a genuine mismatch, so that stays an error.
+    `fps` is the caller stating that the video really does run at a fixed rate.
+    It is used only when no timestamps file exists at all. A file that exists
+    but has the wrong number of entries means the coordinates and the times came
+    from different videos, and stays an error.
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
     lengths = []
@@ -250,15 +255,19 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
 
 # ------------------------------------------------------------- EEG selection
 def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
-    """Highest 0.5-30 / >30 Hz power ratio over the first 5 min."""
+    """Pick the cleanest EEG channel out of the several a recording may hold.
+
+    Chooses whichever has the most of its power in the frequencies sleep scoring
+    depends on, rather than in high-frequency noise, judged over the first five
+    minutes.
+    """
     if len(eeg_idx) == 1:
         return eeg_idx[0]
     stop = min(int(300 * sfreq), raw.n_times)
     best, best_snr = eeg_idx[0], -np.inf
     for i in eeg_idx:
         x = raw.get_data(picks=[i], start=0, stop=stop)[0]
-        # route through the feature module so the whole pipeline shares one
-        # PSD implementation
+        # use the same frequency measurement as the rest of the pipeline
         f, p = H._welch(x, sfreq, int(2 * sfreq))
         snr = p[(f >= 0.5) & (f <= 30)].sum() / (p[f > 30].sum() + 1e-12)
         if snr > best_snr:
@@ -270,10 +279,11 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
 def featurize(entry: dict, probe_seconds: float = 900.0,
               fps: float | None = None,
               mm_per_px: float | None = None) -> pd.DataFrame:
-    """Load one recording and return its per-epoch feature table.
+    """Read one recording and return its per-epoch feature table.
 
-    Bandwidth is measured from the data itself (separately for EEG and EMG), and
-    unsupported tiers are emitted as NaN with their indicator set to 0.
+    Opens the EDF, picks the best EEG channel, works out what the recording can
+    measure, and computes the EEG, EMG and movement features for every epoch.
+    Manual scoring and video tracking are used if given and skipped if not.
 
     `fps` declares a constant video frame rate, used only when the tracking has
     no timestamps file at all -- see resolve_frame_times(). `mm_per_px` converts
@@ -342,9 +352,8 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
         df = pd.concat([df, H.velocity_features(None, None, n_ep)], axis=1)
 
     # --- labels ---
-    # Labels are OPTIONAL: inference runs on unscored recordings, which is the
-    # normal case for a user scoring new data. An absent scoring file yields an
-    # all-None state column rather than an error.
+    # Scoring is optional. Most recordings arrive unscored -- that is the whole
+    # point -- so a missing file leaves the state column empty, not an error.
     if not entry.get("scored") and not entry.get("events"):
         labels = np.full(n_ep, None, dtype=object)
     elif entry["dataset"] != "bids":     # one-hot scoring CSV
@@ -363,19 +372,18 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     df.insert(5, "group", entry["group"])
     df["state"] = labels[:n_ep]
 
-    # temporal context on the raw (pre-z-score) signal features
+    # add each feature's local average and variability over nearby epochs
     base_cols = [c for c in df.columns
                  if c not in ("epoch", "t_start", "recording", "subject",
                               "dataset", "group", "state")]
     df = H.add_temporal_context(df, base_cols, windows=CONTEXT_WINDOWS)
 
-    # Within-recording z-scoring. Applied to amplitude AND ratio features: both
-    # carry large per-site offsets, and z-scoring is computed
-    # here on the recording's FULL epoch set (before any sampling) so the
-    # statistics reflect the recording's natural state mix.
+    # Rescale features against this recording's own average and spread. Done
+    # over every epoch, so the reference reflects the animal's real mix of
+    # sleep and wake rather than whichever epochs get used later.
     df = H.zscore_within(df, H.zscore_target_columns(df), group_col="recording")
 
-    # availability indicators
+    # record which features this recording was actually able to supply
     df["has_tier2"] = int(2 in tiers)
     df["has_tier3"] = int(3 in tiers)
     df["has_tier4"] = int(4 in tiers)
@@ -397,11 +405,10 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
 
 
 def model_columns(df: pd.DataFrame, zscored: bool = False) -> list[str]:
-    """Feature columns the model consumes, including context and indicators.
+    """The feature columns the model actually reads.
 
-    zscored=True swaps every feature for its within-recording z-scored variant,
-    which removes the per-site offset a model would otherwise latch onto as a
-    site fingerprint.
+    `zscored=True` selects the versions rescaled against their own recording,
+    which is what the released model uses.
     """
     base = list(UNIVERSAL)
     for cols, _ in OPTIONAL.values():

@@ -1,62 +1,36 @@
-"""Fine-tune model_somnus_1.0 on a user's own labeled recordings.
+"""Adapt the shipped model to your own recordings.
 
-WHY FINE-TUNING RATHER THAN RETRAINING
---------------------------------------
-Pooling the user's data with the base training set and refitting would drown a
-disease phenotype: a mouse line with fragmented or low-amplitude NREM
-contributes a few hundred epochs against a training set orders of magnitude
-larger, so the refit would mostly relearn "normal" and keep mis-scoring the
-phenotype. Fine tuning instead *starts* from the base model and moves it only
-as far as the new data justifies.
+The base model is a starting point, not the product. If your animals do not look
+like the ones it was trained on -- a disease model with fragmented or
+low-amplitude sleep -- this moves the model toward your data.
 
-HOW
----
-Multinomial logistic loss on the new data, with an L2 penalty that anchors the
-weights to the base model rather than to zero:
+WHY NOT JUST RETRAIN
+Throwing your recordings in with the original training set and refitting would
+drown them: a few hundred epochs of an unusual phenotype against a far larger
+pile of normal sleep, and the result mostly relearns normal. Fine-tuning starts
+from the shipped model and moves it only as far as your data justifies.
 
-    minimize   sum_i s_i * CE(y_i, softmax(W x_i + b))
-               + (lam/2) * ||W - W_base||^2
-               + (lam/2) * ||b - b_base||^2
+THE ONE KNOB
+`lam` sets how tightly the new weights are held to the old ones:
 
-One knob spans the whole spectrum:
-    lam -> infinity   the base model, unchanged (no adaptation)
-    lam -> 0          trained from scratch on the user's data alone
-so "fine-tune vs retrain" becomes a continuum and `lam` is chosen by
-cross-validation on the user's own recordings instead of being asserted.
+    very large   keep the shipped model unchanged
+    around 1     move partway toward your data
+    near 0       train on your data alone, ignoring the shipped model
 
-`s_i` are balanced class weights computed on the NEW data, so a phenotype with
-very little REM still gets REM pulled up rather than ignored.
+So "adapt or retrain" is a dial rather than a decision, and its setting is
+chosen by testing on your own recordings instead of being asserted.
 
-WHAT IS AND IS NOT ADAPTED
-  adapted:      logistic weights + intercepts (anchored), and optionally the
-                HMM transition matrix (below).
-  NOT adapted:  the per-feature centering/scaling in the artifact. Those define
-                the feature contract the weights are expressed in; refitting them
-                would silently change what every weight means. Note features are
-                already z-scored *within recording* upstream, so per-animal
-                amplitude differences are handled before this point.
-
-TRANSITION MATRIX
-Sleep architecture is often exactly what a disease model changes (fragmented
-NREM, reduced REM bouts), and the HMM transition matrix is only 9 numbers, so it
-adapts robustly from little data. It is re-estimated from the new labels using
-the base matrix as a Dirichlet prior:
-
-    A_new[i,:]  proportional to  counts[i,:] + kappa * A_base[i,:] * row_strength
-
-kappa large keeps the base architecture; kappa small trusts the new labels.
+WHAT CHANGES AND WHAT DOES NOT
+The model's weights are adapted, and optionally the transition rates, since
+disrupted sleep architecture is often the very thing being studied and those
+rates are only nine numbers. The feature scaling is left alone: it defines what
+the weights mean, and refitting it would quietly change every one of them.
 
 GUARDRAILS
-  * Adaptation is scored by leave-one-recording-out CV on the user's data, so the
-    reported gain is out-of-sample, not the fit to its own training epochs.
-  * If the user has one recording, it is split into contiguous time blocks
-    instead (never random epochs -- sleep is autocorrelated and random splits
-    leak between neighbors).
-  * Given a reference feature table (`--base-csv`), "forgetting" is measured
-    on it explicitly, so a fine-tune that wrecks general performance is visible
-    rather than silent.
-  * If no lam beats the base model out-of-sample, that is reported and the base
-    model is recommended unchanged.
+Any improvement is measured on recordings held back from the fitting, so the
+number reported is not the model grading its own homework. If no setting beats
+the shipped model, that is reported and the shipped model is recommended
+unchanged.
 
 Usage:
     python -m somnus.train.finetune --labels mydata.csv --out my_model.json
@@ -81,16 +55,19 @@ KAPPA_DEFAULT = 200.0
 
 # --------------------------------------------------------------- core objective
 def _softmax(z: np.ndarray) -> np.ndarray:
+    """Turn the model's raw scores into probabilities that add up to 1."""
     z = z - z.max(axis=1, keepdims=True)
     e = np.exp(z)
     return e / e.sum(axis=1, keepdims=True)
 
 
 def _pack(W: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Flatten the weights into the single list the optimiser works on."""
     return np.concatenate([W.ravel(), b])
 
 
 def _unpack(theta: np.ndarray, k: int, d: int) -> tuple[np.ndarray, np.ndarray]:
+    """Put a flattened list of numbers back into weights."""
     return theta[:k * d].reshape(k, d), theta[k * d:]
 
 
@@ -98,10 +75,10 @@ def fit_anchored(X: np.ndarray, y_idx: np.ndarray, k: int,
                  W0: np.ndarray, b0: np.ndarray, lam: float,
                  sample_weight: np.ndarray | None = None,
                  max_iter: int = 500) -> tuple[np.ndarray, np.ndarray]:
-    """Weighted multinomial logistic fit with an L2 anchor on (W0, b0).
+    """Fit new weights to your data while holding them near the old ones.
 
-    Returns the fine-tuned (W, b). With lam very large this reproduces (W0, b0);
-    with lam ~ 0 it is an unregularised fit to X, y alone.
+    `lam` sets how tight that hold is: very large returns the original weights
+    unchanged, near zero ignores them and fits your data alone.
     """
     n, d = X.shape
     s = np.ones(n) if sample_weight is None else np.asarray(sample_weight, float)
@@ -110,6 +87,7 @@ def fit_anchored(X: np.ndarray, y_idx: np.ndarray, k: int,
     Y[np.arange(n), y_idx] = 1.0
 
     def obj(theta):
+        """How badly these weights do: mistakes made, plus drift from the base."""
         W, b = _unpack(theta, k, d)
         P = _softmax(X @ W.T + b)
         ll = -np.sum(s * np.log(np.clip(P[np.arange(n), y_idx], 1e-12, None)))
@@ -125,7 +103,11 @@ def fit_anchored(X: np.ndarray, y_idx: np.ndarray, k: int,
 
 
 def balanced_weights(y_idx: np.ndarray, k: int) -> np.ndarray:
-    """class_weight='balanced' equivalent, computed on the NEW data."""
+    """Weight the states so a rare one still counts.
+
+    Without this a phenotype with very little REM would simply be outvoted by
+    Wake and NREM.
+    """
     counts = np.bincount(y_idx, minlength=k).astype(float)
     w = np.zeros(k)
     present = counts > 0
@@ -136,10 +118,12 @@ def balanced_weights(y_idx: np.ndarray, k: int) -> np.ndarray:
 # ------------------------------------------------------------ transition matrix
 def adapt_transitions(df: pd.DataFrame, states: list[str], A_base: np.ndarray,
                       kappa: float = KAPPA_DEFAULT) -> np.ndarray:
-    """Re-estimate P(state_t | state_{t-1}) with A_base as a Dirichlet prior.
+    """Re-measure how often sleep moves between states, from your labels.
 
-    Only adjacent epochs from the same recording count, so gaps left by artifact
-    or unlabeled epochs never create phantom transitions.
+    The shipped rates are kept as a starting point and pulled toward yours by
+    however much evidence you have; `kappa` decides how firmly they are held.
+    Only genuinely consecutive epochs count, so a gap left by an unscored stretch
+    never looks like a transition.
     """
     k = len(states)
     idx = {s: i for i, s in enumerate(states)}
@@ -158,7 +142,7 @@ def adapt_transitions(df: pd.DataFrame, states: list[str], A_base: np.ndarray,
 # ------------------------------------------------------------------ evaluation
 def _decode(art: dict, X: np.ndarray, W: np.ndarray, b: np.ndarray,
             A: np.ndarray, groups: np.ndarray) -> np.ndarray:
-    """Viterbi-decode per recording (never across a recording boundary)."""
+    """Smooth the states within each recording, never across two of them."""
     p = _softmax(X @ W.T + b)
     log_pi = np.asarray(art["log_prior"])
     out = np.empty(len(X), dtype=int)
@@ -169,6 +153,7 @@ def _decode(art: dict, X: np.ndarray, W: np.ndarray, b: np.ndarray,
 
 
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray, k: int) -> dict:
+    """Score a set of predictions: overall accuracy, and per state."""
     acc = float((y_true == y_pred).mean())
     per, f1s = {}, []
     for c in range(k):
@@ -188,7 +173,7 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray, k: int) -> dict:
 
 # ----------------------------------------------------------------- data loading
 def prepare(art: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Feature table -> (X, y_idx, groups). Keeps only rows with a known state."""
+    """Pull out the labelled epochs and put them in the model's layout."""
     states = art["states"]
     if "state" not in df.columns:
         raise ValueError("labeled data must have a 'state' column")
@@ -205,10 +190,12 @@ def prepare(art: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.nda
 
 def _folds(groups: np.ndarray, epochs: np.ndarray,
            n_blocks: int = 4) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Leave-one-recording-out; if only one recording, contiguous time blocks.
+    """Split the data for testing: hold out one recording at a time.
 
-    Never random epochs: adjacent epochs are highly correlated, so a random split
-    would let the model see each test epoch's neighbors and inflate the score.
+    With only one recording, it is cut into a few blocks of continuous time
+    instead. Never random epochs -- neighbouring epochs are nearly identical, so
+    a random split would let the model see the answers and report a score far
+    better than it deserves.
     """
     uniq = pd.unique(groups)
     if len(uniq) > 1:
@@ -229,7 +216,12 @@ def _folds(groups: np.ndarray, epochs: np.ndarray,
 def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
              kappa: float = KAPPA_DEFAULT, adapt_A: bool = True,
              lam_grid=LAM_GRID, verbose: bool = True) -> dict:
-    """Fine-tune and return a report plus the new artifact (or None if unhelpful)."""
+    """Adapt the model to your labels and report whether it actually helped.
+
+    Tries a range of settings, measures each on recordings held back from the
+    fitting, and keeps the best. Returns the new model along with the numbers
+    behind the choice, or reports that none beat the shipped model.
+    """
     states = art["states"]
     k = len(states)
     W0 = np.asarray(art["coef"], float)
@@ -254,6 +246,7 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
 
     # ---- baseline (no adaptation) on the same folds, for a fair comparison
     def eval_lam(l: float | None) -> dict:
+        """Test one setting of `lam` on recordings held back from the fitting."""
         yt, yp = [], []
         for tr, te in folds:
             if l is None:
@@ -330,10 +323,11 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
 
 def forgetting_check(art_base: dict, art_new: dict, base_csv: str,
                      verbose: bool = True) -> dict | None:
-    """Score a reference feature table with both models to expose drift.
+    """Check whether adapting the model has cost it its general ability.
 
-    A fine-tune that helps the user's phenotype but destroys general performance
-    should be visible, not silent.
+    Scores a reference set with the old model and the new one. A model that now
+    fits your animals but has forgotten everything else should be visible,
+    not a surprise later.
     """
     if not os.path.exists(base_csv):
         if verbose:
@@ -371,6 +365,7 @@ def forgetting_check(art_base: dict, art_new: dict, base_csv: str,
 
 
 def main() -> None:
+    """Fine-tune a model from the command line."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--labels", required=True,
                     help="featurized CSV with a 'state' column (and ideally "

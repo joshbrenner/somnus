@@ -4,6 +4,7 @@ import numpy as np
 from scipy.signal import welch
 
 def compute_psd(data, sfreq, fmin=0, fmax=200):
+    """How much power the signal carries at each frequency, for display."""
     if data.shape[1] < sfreq: return None, None
     n_ch_use = min(3, data.shape[0])
     data_use = data[:n_ch_use, :]
@@ -14,6 +15,7 @@ def compute_psd(data, sfreq, fmin=0, fmax=200):
     return freqs[idx], 10 * np.log10(avg_psd[idx] + 1e-12)
 
 def get_band_power(data_snippet, sfreq, target_freq, bandwidth=2.0):
+    """Peak power in a narrow band around one frequency, in decibels."""
     if len(data_snippet) < int(sfreq * 0.1): return -100.0 
     
     nperseg = len(data_snippet)
@@ -33,6 +35,7 @@ def get_band_power(data_snippet, sfreq, target_freq, bandwidth=2.0):
     return 10 * np.log10(peak_power + 1e-12)
 
 def get_nice_number(val, round_up=False):
+    """Round a value to a neat 1, 2 or 5 so axis labels read well."""
     if val == 0: return 1
     exponent = np.floor(np.log10(val))
     fraction = val / (10**exponent)

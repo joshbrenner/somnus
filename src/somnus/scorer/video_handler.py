@@ -4,7 +4,12 @@ import numpy as np
 import av
 
 class VideoHandler:
+    """Plays a video and hands back the frame at any given moment.
+
+    Seeks by real timestamp rather than frame number, so playback stays lined
+    up with the EEG even when the camera dropped frames."""
     def __init__(self, video_path):
+        """Open the video and work out when each frame was captured."""
         self.video_path = video_path
         
         try:
@@ -138,5 +143,6 @@ class VideoHandler:
         return self.last_frame
 
     def release(self):
+        """Close the video file."""
         if self.container:
             self.container.close()

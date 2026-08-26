@@ -15,6 +15,7 @@ from somnus.scorer.ui_rendering import render_composite, WINDOW_NAME, perform_re
 from somnus.scorer.signal_utils import compute_psd
 
 def find_associated_video(edf_path):
+    """Look beside the recording for the video that belongs to it."""
     directory = os.path.dirname(os.path.abspath(edf_path))
     basename = os.path.basename(edf_path)
     candidates = []
@@ -53,8 +54,10 @@ def find_associated_video(edf_path):
     return best_video
 
 class SleepReviewState:
+    """Everything the scorer window is currently showing and holding."""
     def __init__(self, edf_path, csv_path, sfreq, ch_names, n_times, screen_w, screen_h,
                  review_meta_path=None, certainty_threshold=0.80):
+        """Load the recording, its scoring, and the model output if present."""
         self.sfreq = sfreq
         self.ch_names = ch_names
         self.csv_path = csv_path
@@ -101,13 +104,12 @@ class SleepReviewState:
             self.df['Confirmed'] = 0
         self.df['Confirmed'] = self.df['Confirmed'].fillna(0).astype(int)
 
-        # --- optional model-review metadata (written by the Somnus GUI) ---
-        # None when the viewer is used standalone, in which case every review
-        # feature below simply does not render.
+        # How sure the model was about each epoch, written by the Somnus app.
+        # Absent when the scorer is opened on its own, in which case the
+        # model-review parts of the display are simply not drawn.
         self.review_meta = None
         self.uncertain_btn = None
-        # 'low certainty' means max class probability below this. Supplied by the
-        # GUI, adjustable in-window with [ and ].
+        # An epoch counts as low certainty below this. Adjustable with [ and ].
         self.certainty_threshold = float(certainty_threshold)
         self.epoch_sec = 4.0
         self._load_review_meta(review_meta_path)
@@ -145,6 +147,7 @@ class SleepReviewState:
               f"certainty threshold")
 
     def _epoch_of(self, t_sec):
+        """Which epoch covers this moment in the recording."""
         if self.review_meta is None:
             return None
         i = int(t_sec // self.epoch_sec)
@@ -193,6 +196,7 @@ class SleepReviewState:
         return probs, conf, n_low, hi - lo
 
     def n_smoothed_in(self, t0, t1):
+        """How many epochs in this stretch had their label changed by smoothing."""
         if self.review_meta is None:
             return 0
         lo = max(0, int(t0 // self.epoch_sec))
@@ -200,6 +204,7 @@ class SleepReviewState:
         return int(self._sm[lo:hi].sum()) if hi > lo else 0
 
     def nudge_threshold(self, delta):
+        """Move the certainty threshold up or down."""
         self.certainty_threshold = float(np.clip(
             self.certainty_threshold + delta, 0.0, 1.0))
         self.update_counter += 1          # force the panels to redraw
@@ -269,6 +274,7 @@ class SleepReviewState:
               f"{self.certainty_threshold:.2f}]")
 
     def _calculate_bouts(self):
+        """Group runs of the same state into bouts, for the navigation buttons."""
         conditions = [
             self.df['Artifact'] == 1,
             self.df['REM'] == 1,
@@ -287,6 +293,7 @@ class SleepReviewState:
         ).reset_index()
 
     def jump_to_next(self, target_state):
+        """Move to the next or previous bout of a given state."""
         exact_time = self.current_time_sec + self.playback_offset_sec
         future_bouts = self.bouts[(self.bouts['Start_Time'] > exact_time) & 
                                   (self.bouts['State'] == target_state)]
@@ -299,6 +306,7 @@ class SleepReviewState:
             print(f"No future {target_state} bouts found.")
 
     def jump_to_adjacent_epoch(self, direction='next'):
+        """Step to the next or previous epoch boundary."""
         exact_time = self.current_time_sec + self.playback_offset_sec
         current_bout_mask = self.bouts['Start_Time'] <= exact_time
         
@@ -325,6 +333,7 @@ class SleepReviewState:
         self.pending_jump_time = target_boundary
 
     def paint_state(self, start_sec, end_sec, save=True):
+        """Apply the active brush to every bin in this stretch of time."""
         if not self.active_brush: return
 
         # Safely capture all overlapping bins
@@ -357,14 +366,17 @@ class SleepReviewState:
             self.save_csv()
 
     def n_confirmed(self):
+        """How many epochs the user has explicitly confirmed."""
         return int(self.df['Confirmed'].sum()) if 'Confirmed' in self.df else 0
 
     def save_csv(self):
+        """Write the scoring back to its file."""
         export_df = self.df.drop(columns=['State', 'Bout_ID'])
         export_df.to_csv(self.csv_path, index=False)
         print(f"Successfully saved updated scoring to {self.csv_path}")
 
 def on_mouse(event, x, y, flags, param):
+    """Handle every click and drag in the window."""
     state = param
     
     # --- 0. DROPDOWN MENU INTERCEPT ---
@@ -463,6 +475,7 @@ def on_mouse(event, x, y, flags, param):
 
 def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
                  review_meta_path=None, certainty_threshold=0.80):
+    """Run the scorer: open the recording and loop until the user quits."""
     print(f"Lazy Loading {os.path.basename(edf_path)}...")
     mne.set_log_level('ERROR')
     
@@ -655,6 +668,7 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
 
 
 def main():
+    """Start the scorer from the command line."""
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)

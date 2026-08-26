@@ -13,10 +13,9 @@ COLORS = {
     'Artifact': (0, 200, 200),
     'Unclear': (200, 50, 200),
     'Unknown': (50, 50, 50),
-    # epochs whose label was changed by the HMM smoothing rather than taken
-    # straight from the per-epoch model output. Shown distinctly so they can be
-    # eyeballed (smoothing can absorb a genuine short bout), but they are NOT
-    # targeted by the jump-to-most-uncertain control.
+    # Epochs whose label the smoothing changed. Coloured separately so they can
+    # be checked, since smoothing can swallow a real short bout, but not treated
+    # as uncertain -- that is a different thing.
     'HMM_Smoothed': (230, 200, 60),
 }
 
@@ -55,6 +54,7 @@ RENDER_CACHE = {
 }
 
 def perform_resize(win_name, img_w, img_h):
+    """Fit the video and panels to the screen, keeping proportions."""
     cv2.resizeWindow(win_name, img_w, img_h)
     cv2.waitKey(1)
     # Shift Y down 40 px to stay clear of the macOS menu bar
@@ -128,6 +128,7 @@ def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
 
 
 def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_duration, sfreq, w, h, eeg_gain, emg_gain, v_range, num_eeg, offset=0.0):
+    """Draw the EEG and EMG traces with the scored timeline beneath them."""
     n_ch, n_samples = data_slice.shape
     img = np.zeros((h, w, 3), dtype=np.uint8)
     if n_samples == 0: return img
@@ -165,9 +166,8 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
             cv2.rectangle(ov2, (max(0, x1), 0), (min(w, x2), h), color, -1)
         cv2.addWeighted(ov2, 0.60, img, 0.40, 0, img)
 
-    # Mark epochs the HMM smoothing changed, as a hatch along the top edge. Drawn
-    # after the blend so it stays legible, and kept thin so it annotates the
-    # state color rather than replacing it.
+    # Mark epochs the smoothing changed with a thin hatch along the top, so it
+    # annotates the state colour rather than hiding it.
     if getattr(state, 'review_meta', None) is not None:
         for t0, t1 in state.smoothed_spans(window_start_sec, end_time_sec):
             x1 = int(((t0 - window_start_sec) / window_duration) * w)
@@ -232,6 +232,7 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
     return img
 
 def draw_menubar(img, w, h, state):
+    """Draw the menu strip across the top of the window."""
     cv2.rectangle(img, (0, 0), (w, h), (40, 40, 40), -1)
     cv2.line(img, (0, h-1), (w, h-1), (100, 100, 100), 1)
 
@@ -253,6 +254,7 @@ def draw_menubar(img, w, h, state):
     return img
 
 def draw_dropdown(img, state):
+    """Draw the open menu's list of options."""
     if not state.active_menu: return
 
     x_start = MENU_HEADERS[state.active_menu][0]
@@ -278,6 +280,7 @@ def draw_dropdown(img, state):
         cv2.putText(img, item, (x_start + 30, y_item + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
 def draw_sidebar(state, h, w_side):
+    """Draw the side panel: bout navigation and the model-review controls."""
     img = np.zeros((h, w_side, 3), dtype=np.uint8)
     cv2.rectangle(img, (0, 0), (w_side, h), (30, 30, 30), -1)
     cv2.line(img, (0, 0), (0, h), (100, 100, 100), 1)
@@ -352,6 +355,7 @@ def draw_sidebar(state, h, w_side):
     return img
 
 def render_composite(state, frame, eeg_slice, ch_names, sfreq, window_start_sec, playback_offset_sec, window_dur, eeg_gain, emg_gain, offset, v_range, active_brush, num_eeg, init_emg_log):
+    """Assemble one complete frame of the scorer window."""
     
     VIDEO_W = state.video_w
     EEG_W = state.eeg_w

@@ -1,11 +1,12 @@
-"""Non-GUI core for the Somnus app: project state, labels with provenance, scoring.
+"""Everything the desktop app does, minus the windows.
 
-Kept free of Qt so it can be tested and scripted without a display, and so the
-GUI layer stays thin.
+Projects, the label table, scoring, and the hand-off to the manual scorer all
+live here. None of it touches Qt, so it can be scripted or tested without a
+display.
 
-READ-ONLY ON SOURCE DATA. Every write goes under the project directory. Source
-EDFs, scored CSVs, videos and tracking files are opened for reading only and are
-never modified, moved or written next to.
+YOUR SOURCE DATA IS NEVER WRITTEN TO. Recordings, scoring files, videos and
+tracking files are opened for reading only. Everything Somnus produces goes in
+the project folder.
 """
 from __future__ import annotations
 
@@ -23,33 +24,33 @@ from somnus.predict import DEFAULT_ARTIFACT
 STATES = ["Wake", "NREM", "REM"]
 EPOCH_SEC = 4.0
 
-# How a label came to be. Fine-tuning may only ever train on manually sourced rows:
-# training on the model's own output is a feedback loop that raises apparent
-# confidence while adding no information.
+# Where each label came from. Fine-tuning may only ever learn from labels a
+# person supplied -- training the model on its own guesses would make it look
+# more confident while teaching it nothing.
 SRC_MODEL = "model"        # produced by the classifier
 SRC_CONFIRMED = "manual_confirmed"   # the user looked and agreed
 SRC_CORRECTED = "manual_corrected"   # the user changed it
 SRC_IMPORTED = "manual_imported"     # from a pre-existing manual scoring file
 SRC_EXCLUDED = "manual_excluded"     # the user marked it Artifact/unscorable
-# Sources that may be used as fine-tuning targets. SRC_EXCLUDED is deliberately
-# absent: the user said the epoch is not a clean state, so it must not train the
-# model, but it is still recorded so the decision survives a re-score.
+# Labels fine-tuning is allowed to learn from. Excluded epochs are left out:
+# the user said they are not clean sleep, so the model must not learn them,
+# but the decision is remembered so re-scoring does not undo it.
 MANUAL_SOURCES = (SRC_CONFIRMED, SRC_CORRECTED, SRC_IMPORTED)
 # Sources a model write must not clobber (includes exclusions).
 PROTECTED_SOURCES = MANUAL_SOURCES + (SRC_EXCLUDED,)
 
 
 def _now() -> str:
+    """The current time, in a form that sorts correctly as text."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 # ------------------------------------------------------------------ user config
-# Settings that belong to the person, not to a project: chiefly whether they
-# have already been warned that a declared frame rate is less trustworthy than
-# real per-frame timestamps. Asking once is the point, so this lives outside any
-# single project directory.
+# Settings that belong to the person rather than to any one project -- mainly
+# which warnings they have already seen. Kept outside the project folder so
+# "don't ask again" holds everywhere.
 def user_config_path() -> str:
-    """Location of the per-user settings file, honoring the platform's convention."""
+    """Where this user's settings live, following the platform's convention."""
     if sys.platform == "win32":
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
     else:
@@ -59,7 +60,7 @@ def user_config_path() -> str:
 
 
 def load_user_config() -> dict:
-    """Read the per-user settings; an unreadable or absent file means defaults."""
+    """Read this user's settings. A missing or damaged file just means defaults."""
     try:
         with open(user_config_path()) as fh:
             d = json.load(fh)
@@ -69,8 +70,10 @@ def load_user_config() -> dict:
 
 
 def save_user_config(**values) -> None:
-    """Merge `values` into the per-user settings. Never raises: these are
-    conveniences, and failing to record one must not break scoring."""
+    """Record settings for this user. Never fails loudly.
+
+    These are conveniences, so being unable to save one must not stop scoring.
+    """
     cfg = load_user_config()
     cfg.update(values)
     path = user_config_path()
@@ -85,6 +88,8 @@ def save_user_config(**values) -> None:
 # --------------------------------------------------------------------- project
 @dataclass
 class Recording:
+    """One recording, and the files that belong with it."""
+
     name: str
     edf: str
     scored: str | None = None          # pre-existing manual labels, if any
@@ -99,11 +104,10 @@ class Recording:
 
     @property
     def has_velocity(self) -> bool:
-        """Velocity needs positions AND a trustworthy time for every frame.
+        """Whether movement can be measured: needs positions and frame times.
 
-        Cameras can drop frames, so assuming a constant rate misplaces positions
-        by minutes. Timestamps supply the true times; a frame rate the user has
-        declared is accepted in their place, but nothing is guessed.
+        Cameras drop frames, so the times have to come from a timestamps file or
+        from a frame rate the user has stated. Nothing is guessed.
         """
         if self.skip_video or not self.coords:
             return False
@@ -111,24 +115,22 @@ class Recording:
 
     @property
     def needs_frame_times(self) -> bool:
-        """Tracking is present but there is no timestamps file to go with it.
-
-        True until the user either declares a frame rate or opts out of video
-        for this recording.
-        """
+        """Tracking exists but its frame times do not, so the user must decide."""
         return (bool(self.coords) and not self.timestamps
                 and not self.fps and not self.skip_video)
 
 
 @dataclass
 class Project:
+    """A working folder: which recordings, which model, and what has been done."""
+
     path: str
     name: str = "somnus_project"
     model: str = ""                    # active model artifact
     recordings: list[Recording] = field(default_factory=list)
     created: str = field(default_factory=_now)
 
-    # ---- persistence
+    # ---- where everything lives inside the project folder
     @property
     def file(self) -> str:
         return os.path.join(self.path, "project.json")
@@ -146,10 +148,12 @@ class Project:
         return os.path.join(self.path, "models")
 
     def ensure_dirs(self) -> None:
+        """Create the project's folders if they are not there yet."""
         for d in (self.path, self.labels_dir, self.cache_dir, self.models_dir):
             os.makedirs(d, exist_ok=True)
 
     def save(self) -> None:
+        """Write the project back to disk."""
         self.ensure_dirs()
         d = asdict(self)
         d.pop("path", None)            # implied by location
@@ -158,6 +162,7 @@ class Project:
 
     @classmethod
     def load(cls, path: str) -> "Project":
+        """Open an existing project folder."""
         with open(os.path.join(path, "project.json")) as fh:
             d = json.load(fh)
         recs = [Recording(**r) for r in d.pop("recordings", [])]
@@ -166,6 +171,7 @@ class Project:
     @classmethod
     def create(cls, path: str, name: str | None = None,
                model: str = "") -> "Project":
+        """Start a new project in an empty folder."""
         p = cls(path=path, name=name or os.path.basename(path.rstrip("/")),
                 model=model or DEFAULT_ARTIFACT)
         p.ensure_dirs()
@@ -173,15 +179,16 @@ class Project:
         return p
 
     def get(self, name: str) -> Recording | None:
+        """Look up one recording by name."""
         return next((r for r in self.recordings if r.name == name), None)
 
 
 def discover_recordings(folder: str) -> list[Recording]:
-    """Find EDFs in a folder and pair them with sibling label/tracking/video files.
+    """List the recordings in a folder, with any scoring, video and tracking.
 
-    Purely descriptive: nothing is opened for writing, nothing is copied. Matching
-    is by filename prefix, so a recording's video and tracking files are found
-    whatever suffix the camera or tracker appends to the EDF's base name.
+    Files are matched by the start of their name, so a recording's companions
+    are found whatever suffix the camera or tracker adds. Nothing is opened for
+    writing and nothing is copied.
     """
     import glob as _glob
     out = []
@@ -194,6 +201,7 @@ def discover_recordings(folder: str) -> list[Recording]:
             edf = os.path.join(root, f)
 
             def first(pattern: str, exclude: tuple[str, ...] = ()) -> str | None:
+                """The first matching file in this folder, or None."""
                 hits = [p for p in sorted(_glob.glob(os.path.join(root, pattern)))
                         if not any(x in os.path.basename(p) for x in exclude)]
                 return hits[0] if hits else None
@@ -228,26 +236,23 @@ def discover_recordings(folder: str) -> list[Recording]:
 
 
 # ---------------------------------------------------------------------- labels
-# `model_state` records what the classifier predicted for this epoch, kept even
-# after the user overrides `state`. Without it there is no way to tell a real
-# correction from a label that was edited and then put back: the row would stay
-# flagged as manually corrected, show as reviewed, and be fed to fine-tuning even
-# though it is identical to the model's own output -- which is the feedback loop
-# the provenance tracking exists to prevent.
+# `model_state` remembers what the model said, even after the user changes the
+# label. Without it, an epoch edited and then changed back would still count as
+# a correction, and the model would end up being taught its own guess.
 LABEL_COLS = ["epoch", "t_start", "state", "source", "confidence",
               "model", "model_state", "updated"]
 
 
 class LabelStore:
-    """Per-recording label table with provenance, stored under the project.
+    """One recording's labels, and where each one came from.
 
-    One row per 4 s epoch:
-        epoch, t_start, state, source, confidence, model, updated
+    One row per epoch, recording the state, who decided it, and how confident
+    the model was.
 
-    Invariant enforced here: **a model write never overwrites a manual row.**
-    That is the whole point of tracking `source` -- it keeps re-scoring a
-    recording from silently discarding someone's manual corrections, and it lets
-    fine-tuning select manual rows only.
+    The rule this exists to enforce: **scoring never overwrites a label a person
+    set.** Re-scoring a recording with different settings cannot quietly throw
+    away someone's corrections, and fine-tuning can pick out the manual labels
+    and ignore the rest.
     """
 
     def __init__(self, project: Project, recording: str):
@@ -257,6 +262,7 @@ class LabelStore:
         self.df = self._load()
 
     def _load(self) -> pd.DataFrame:
+        """Read this recording's labels, or start an empty table."""
         if os.path.exists(self.path):
             df = pd.read_csv(self.path)
             for c in LABEL_COLS:
@@ -271,13 +277,14 @@ class LabelStore:
 
     # ---- queries
     def manual_mask(self) -> np.ndarray:
-        """Rows usable as fine-tuning targets (excludes Artifact-marked epochs)."""
+        """The labels a person set, which are the only ones fine-tuning may use."""
         return self.df["source"].isin(MANUAL_SOURCES).to_numpy()
 
     def protected_mask(self) -> np.ndarray:
-        """Rows a model write must not overwrite (manual labels AND exclusions)."""
+        """Every label scoring must leave alone: manual ones, and exclusions."""
         return self.df["source"].isin(PROTECTED_SOURCES).to_numpy()
 
+    # ---- how many labels of each kind this recording has
     def n_confirmed(self) -> int:
         return int((self.df['source'] == SRC_CONFIRMED).sum())
 
@@ -291,11 +298,10 @@ class LabelStore:
         return int((self.df["source"] == SRC_EXCLUDED).sum())
 
     def revert_to_model(self, epoch: int) -> bool:
-        """Drop the manual flag when the label matches the model again.
+        """Forget a correction that has been changed back to what the model said.
 
-        Used when an epoch was edited and then changed back: leaving it marked as
-        manually corrected would keep it green in the hypnogram and, worse, feed the
-        model its own prediction as a training target.
+        Otherwise the epoch would still look reviewed, and fine-tuning would be
+        handed the model's own guess as if a person had chosen it.
         """
         row = self.df[self.df["epoch"] == epoch]
         if not len(row):
@@ -309,7 +315,7 @@ class LabelStore:
         return True
 
     def set_excluded(self, epoch: int) -> None:
-        """Mark an epoch as manually excluded (Artifact / not a clean state)."""
+        """Mark an epoch as unusable: artifact, or not cleanly one state."""
         row = self.df[self.df["epoch"] == epoch]
         t = float(row["t_start"].iloc[0]) if len(row) else epoch * EPOCH_SEC
         model = row["model"].iloc[0] if len(row) else ""
@@ -323,15 +329,16 @@ class LabelStore:
         return int(self.manual_mask().sum())
 
     def counts(self) -> dict:
+        """How many epochs of each sleep state."""
         return self.df["state"].value_counts().to_dict()
 
     # ---- writes
     def set_model_labels(self, epochs: np.ndarray, t_start: np.ndarray,
                          states: np.ndarray, confidence: np.ndarray,
                          model: str) -> int:
-        """Write model predictions, leaving every manually sourced row untouched.
+        """Store the model's scoring, leaving every manual label untouched.
 
-        Returns the number of epochs actually written.
+        Returns how many epochs were actually written.
         """
         new = pd.DataFrame({
             "epoch": epochs, "t_start": t_start, "state": states,
@@ -356,10 +363,10 @@ class LabelStore:
 
     def set_manual_label(self, epoch: int, state: str,
                          corrected: bool | None = None) -> None:
-        """Record the user's decision for one epoch.
+        """Record what a person decided for one epoch.
 
-        `corrected=None` infers it: same as the current label -> confirmed,
-        different -> corrected.
+        By default it works out for itself whether they changed the label or
+        confirmed the one already there.
         """
         row = self.df[self.df["epoch"] == epoch]
         prev = row["state"].iloc[0] if len(row) else None
@@ -380,11 +387,11 @@ class LabelStore:
         self.df = pd.concat([keep, new], ignore_index=True)
 
     def import_manual(self, scored_csv: str, n_epochs: int) -> int:
-        """Import a pre-existing one-hot _scored.csv as manual labels.
+        """Bring in scoring the user already had, as manual labels.
 
-        The source file is read only. Its 0.5 s bins are collapsed onto 4 s
-        epochs, and an epoch is only accepted if every bin inside it agrees and
-        none is artifact/unknown -- a mixed epoch is not a label.
+        Their file is only read, never altered. Its finer bins are collapsed onto
+        whole epochs, and an epoch is accepted only if all of it agrees: a mixed
+        epoch is not a label.
         """
         s = pd.read_csv(scored_csv)
         step = float(np.median(np.diff(s["Time_sec"].to_numpy()))) or 0.5
@@ -432,7 +439,7 @@ def featurize(recording: Recording, cache: str | None = None) -> pd.DataFrame:
 
 def score(feat: pd.DataFrame, model_path: str, decode: bool = True,
           stickiness: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Predict states. Returns (labels, per-epoch probabilities)."""
+    """Score a recording. Returns the states and how confident the model was."""
     from somnus.predict import load_model, predict
     art = load_model(model_path)
     return predict(art, feat, decode=decode, stickiness=stickiness)
@@ -440,15 +447,11 @@ def score(feat: pd.DataFrame, model_path: str, decode: bool = True,
 
 def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
                 raw: np.ndarray | None = None) -> np.ndarray:
-    """Per-epoch review priority in [0, 1]; higher means 'look at me first'.
+    """Rank epochs by how much they need a human eye, from 0 to 1.
 
-    Combines two complementary signals:
-      * margin -- how close the top two class probabilities are. A 0.51/0.49
-        epoch is genuinely ambiguous to the model.
-      * decode override -- the smoothed label disagrees with the raw per-epoch
-        argmax, i.e. the HMM overruled the evidence. These are exactly where
-        smoothing may have erased a real short bout, so they are worth checking
-        even when the model looks confident.
+    Two things earn attention: the model being torn between two states, and the
+    smoothing having overruled what the model actually saw. The second matters
+    because that is where a real short bout may have been erased.
     """
     p = np.sort(proba, axis=1)
     margin = 1.0 - (p[:, -1] - p[:, -2])          # 1 = tied, 0 = certain
@@ -461,7 +464,7 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
 def review_queue(proba: np.ndarray, labels: np.ndarray, raw: np.ndarray,
                  manual: np.ndarray | None = None,
                  top: int | None = None) -> np.ndarray:
-    """Epoch indices ordered by review priority, already-reviewed ones dropped."""
+    """Epochs worth reviewing, most doubtful first, skipping ones already seen."""
     u = uncertainty(proba, labels, raw)
     if manual is not None:
         u = np.where(manual, -1.0, u)
@@ -472,11 +475,11 @@ def review_queue(proba: np.ndarray, labels: np.ndarray, raw: np.ndarray,
 
 # ----------------------------------------------------- hand-off to the scorer UI
 def smooth_trace(x: np.ndarray, window: int = 15) -> np.ndarray:
-    """Centered rolling median, for displaying a readable confidence trace.
+    """Smooth a trace so it can actually be read on screen.
 
-    A per-epoch confidence trace on a multi-hour recording is mostly vertical
-    hash; a ~1 min median keeps the shape while making it legible. Display only --
-    never fed back into scoring.
+    Per-epoch confidence over several hours is a solid block of hash. This keeps
+    the shape while making it legible. For display only -- it never affects
+    scoring.
     """
     if window <= 1 or len(x) == 0:
         return np.asarray(x, dtype=float)
@@ -489,13 +492,12 @@ MAX_SCORING_VERSIONS = 5
 
 def archive_scoring(project: "Project", recording: Recording,
                     keep: int = MAX_SCORING_VERSIONS) -> str | None:
-    """Snapshot the current scoring CSV into labels/history/ before it is replaced.
+    """Keep a copy of the current scoring before anything replaces it.
 
-    Manual scoring is the expensive, irreplaceable part of this workflow, and the
-    scorer overwrites its CSV in place on save. Keeping the last `keep` snapshots
-    means a mis-paint, a wrong-brush drag, or a re-score that clobbers work can be
-    recovered. Oldest snapshots are pruned so the folder cannot grow without
-    bound. Returns the snapshot path, or None if there was nothing to archive.
+    Manual scoring is the expensive, irreplaceable part of this work, and the
+    scorer saves over its file in place. A few recent copies are kept, so a
+    slipped brush or an unwanted re-score can be undone. Returns where the copy
+    went, or None if there was nothing to save.
     """
     import glob as _glob
     import shutil
@@ -524,7 +526,7 @@ def archive_scoring(project: "Project", recording: Recording,
 
 
 def scoring_versions(project: "Project", recording: Recording) -> list[str]:
-    """Snapshots for this recording, newest last."""
+    """Earlier copies of this recording's scoring, oldest first."""
     import glob as _glob
     hist = os.path.join(project.labels_dir, "history")
     return sorted(_glob.glob(os.path.join(hist,
@@ -535,17 +537,15 @@ def write_viewer_bundle(project: "Project", recording: Recording,
                         labels: np.ndarray, proba: np.ndarray,
                         raw: np.ndarray, store: "LabelStore",
                         bin_sec: float = 0.5) -> tuple[str, str]:
-    """Write the two files the scorer UI reads, inside the project.
+    """Write the two files the manual scorer opens.
 
-    Returns (scored_csv, meta_csv).
+    The first holds the model's labels, so the user corrects rather than scores
+    from scratch. The second carries how sure the model was about each epoch,
+    which drives the confidence readout, the jump-to-uncertain button and the
+    separate colour for smoothed epochs.
 
-    * scored_csv -- the one-hot layout the UI already expects, expanded from 4 s
-      epochs to `bin_sec` bins. Written into the project, NOT beside the EDF:
-      the UI's save_csv() overwrites whatever path it is given, and pointing it at
-      the source folder would modify original data.
-    * meta_csv -- per-epoch `uncertainty` and `hmm_smoothed`, which the UI uses
-      for the certainty readout, the jump-to-most-uncertain control and the
-      distinct color for smoothed epochs. Optional: without it the UI still runs.
+    Both go in the project folder, never beside the original recording: the
+    scorer saves over whatever file it is given.
     """
     project.ensure_dirs()
     n_ep = len(labels)
@@ -612,23 +612,21 @@ def write_viewer_bundle(project: "Project", recording: Recording,
 def read_viewer_labels(project: "Project", recording: Recording,
                        store: "LabelStore", n_epochs: int,
                        bin_sec: float = 0.5) -> dict:
-    """Pull edits made in the scorer UI back into the label store.
+    """Read the user's corrections back out of the manual scorer.
 
-    Returns {'corrected': n, 'confirmed': n, 'excluded': n, 'reverted': n}.
+    Returns how many epochs were corrected, confirmed, excluded and reverted.
 
-    **Only epochs whose label CHANGED are recorded as manual.** The CSV handed to
-    the scorer is pre-filled with the model's own predictions, so an untouched
-    epoch comes back identical. Treating those as "manually confirmed" would convert
-    the model's entire output into training targets -- a feedback loop that
-    inflates apparent confidence while adding no information, and precisely what
-    the `source` column exists to prevent. A genuine "I looked and agreed" is
-    indistinguishable from "I never visited this epoch" once it is a CSV, so the
-    conservative reading is the only safe one. (Confirmations can still be
-    recorded explicitly elsewhere; they are simply not inferred from a round-trip.)
+    **Only epochs whose label actually changed count as manual.** The file the
+    scorer opens already holds the model's own labels, so an epoch nobody
+    touched comes back identical to one that was checked and agreed with. There
+    is no way to tell them apart afterwards, so neither is assumed to be
+    reviewed -- otherwise the model's entire output would become its own
+    training data. The Confirm brush exists to say "I looked and this is right"
+    deliberately.
 
-    Epochs painted Artifact or Unclear are recorded as `manual_excluded`: the user
-    is saying "this is not a clean state", so the epoch must be kept OUT of
-    fine-tuning even if it previously carried a valid label.
+    Epochs painted Artifact or Unclear are recorded as excluded: the user is
+    saying this is not clean sleep, so it stays out of fine-tuning even if it
+    previously held a valid label.
     """
     path = os.path.join(project.labels_dir, f"{recording.name}_scored.csv")
     if not os.path.exists(path):
@@ -691,10 +689,10 @@ def read_viewer_labels(project: "Project", recording: Recording,
 
 # ------------------------------------------------------------------- QC checks
 def qc_flags(labels: np.ndarray, epoch_sec: float = EPOCH_SEC) -> list[dict]:
-    """Physiologically suspicious patterns worth a manual review.
+    """Flag patterns that look physiologically odd and may be worth a look.
 
-    These are hints, not errors: a flag means 'unusual', and unusual is exactly
-    what a disease model may legitimately produce. They are never auto-corrected.
+    Hints, never errors, and never corrected automatically. Unusual sleep is
+    exactly what a disease model is supposed to produce.
     """
     flags = []
     if len(labels) == 0:
@@ -720,7 +718,7 @@ def qc_flags(labels: np.ndarray, epoch_sec: float = EPOCH_SEC) -> list[dict]:
 
 # --------------------------------------------------------- architecture export
 def architecture(labels: np.ndarray, epoch_sec: float = EPOCH_SEC) -> dict:
-    """Sleep-architecture summary: the numbers that go in a paper."""
+    """Summarise the sleep: time in each state, bout counts and lengths."""
     n = len(labels)
     out: dict = {"n_epochs": int(n),
                  "recording_hours": round(n * epoch_sec / 3600.0, 3)}

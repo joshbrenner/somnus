@@ -260,6 +260,7 @@ class HypnogramCanvas(FigureCanvas):
         self.draw_idle()
 
     def set_cursor(self, epoch: int):
+        """Move the marker showing where the scorer is looking."""
         if self.cursor is not None:
             t = epoch * self._epoch_sec / 3600.0
             self.cursor.set_xdata([t]); self.cursor_c.set_xdata([t])
@@ -268,6 +269,7 @@ class HypnogramCanvas(FigureCanvas):
 
 # ------------------------------------------------------------------ main window
 class MainWindow(QMainWindow):
+    """The application window: five tabs and the project they act on."""
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Somnus — sleep scoring")
@@ -596,6 +598,7 @@ class MainWindow(QMainWindow):
         return w
 
     def refresh_eval_models(self):
+        """Refresh the list of fine-tuned models to compare against."""
         if not self.project:
             return
         import glob
@@ -611,6 +614,7 @@ class MainWindow(QMainWindow):
         self._eval_models = {os.path.basename(p): p for p in found}
 
     def _show_table(self, df: pd.DataFrame):
+        """Put a table of results on screen and keep it for export."""
         self._ev_table = df
         self.tbl_ev.clear()
         self.tbl_ev.setRowCount(len(df)); self.tbl_ev.setColumnCount(len(df.columns))
@@ -625,6 +629,7 @@ class MainWindow(QMainWindow):
                 self.tbl_ev.setItem(i, j, it)
 
     def on_compare(self):
+        """Score the ticked recordings with two models and compare them."""
         queue = self.checked()
         if not queue or self.runner.busy():
             QMessageBox.information(self, "Nothing selected",
@@ -694,6 +699,7 @@ class MainWindow(QMainWindow):
         self.runner.start(job, self.after_eval, self.log)
 
     def on_architecture(self):
+        """Summarise sleep structure for the ticked recordings."""
         queue = self.checked()
         if not queue or self.runner.busy():
             QMessageBox.information(self, "Nothing selected",
@@ -730,6 +736,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def after_eval(self, res):
+        """Show the table produced by a comparison or summary run."""
         self.bar_ev.hide()
         self.b_cmp.setEnabled(True); self.b_arch.setEnabled(True)
         if not isinstance(res, dict):
@@ -762,6 +769,7 @@ class MainWindow(QMainWindow):
         self.log(f"evaluation done ({res['kind']})")
 
     def on_export_table(self):
+        """Save the table on screen as a CSV."""
         if self._ev_table is None or not len(self._ev_table):
             QMessageBox.information(self, "Nothing to export",
                                     "Run a comparison or breakdown first.")
@@ -775,6 +783,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- project ops
     def on_new(self):
+        """Create a new project folder."""
         d = QFileDialog.getExistingDirectory(self, "Choose an empty folder for "
                                                   "the new project")
         if not d:
@@ -791,6 +800,7 @@ class MainWindow(QMainWindow):
         self.log(f"created project '{name}' at {d}")
 
     def on_open(self):
+        """Open an existing project folder."""
         d = QFileDialog.getExistingDirectory(self, "Open project folder")
         if not d:
             return
@@ -803,6 +813,7 @@ class MainWindow(QMainWindow):
         self.log(f"opened project {d} ({len(self.project.recordings)} recordings)")
 
     def on_add_folder(self):
+        """Add every recording found in a folder to the project."""
         if not self.project:
             return
         d = QFileDialog.getExistingDirectory(self, "Folder containing EDF "
@@ -818,6 +829,7 @@ class MainWindow(QMainWindow):
         self.log(f"added {len(new)} recording(s) from {d}")
 
     def refresh_project(self):
+        """Redraw the project table from the project on disk."""
         p = self.project
         self.lbl_proj.setText(f"<b>{p.name}</b> — {p.path}")
         self.tbl.blockSignals(True)
@@ -866,6 +878,7 @@ class MainWindow(QMainWindow):
         self._set_enabled(bool(p.recordings))
 
     def on_tbl_item_changed(self, item: QTableWidgetItem):
+        """Keep the project in step when a row is ticked or renamed."""
         if item.column() != 0 or not self.project:
             return
         row = item.row()
@@ -877,6 +890,7 @@ class MainWindow(QMainWindow):
             self.refresh_score_list()
 
     def on_check_all(self, on: bool):
+        """Tick or untick every recording at once."""
         if not self.project:
             return
         for r in self.project.recordings:
@@ -889,6 +903,7 @@ class MainWindow(QMainWindow):
                               f"ticked" if self.project else "")
 
     def checked(self) -> list[core.Recording]:
+        """Every recording currently ticked on the Project tab."""
         return [r for r in self.project.recordings if r.selected] \
             if self.project else []
 
@@ -940,12 +955,14 @@ class MainWindow(QMainWindow):
         return self.project.recordings[sorted(rows)[0]]
 
     def on_pick_recording(self):
+        """Choose which recording the Review tab is showing."""
         r = self._selected()
         if r:
             self.lbl_score.setText(f"cursor on: <b>{r.name}</b>")
 
     # ---------------------------------------------------------------- scoring
     def refresh_score_list(self):
+        """Refresh the list of recordings available to review."""
         self.lst_score.clear()
         for r in self.checked():
             bits = [r.name]
@@ -958,6 +975,7 @@ class MainWindow(QMainWindow):
                                "<i>nothing ticked on the Project tab</i>")
 
     def on_score(self):
+        """Score every ticked recording with the current model."""
         queue = self.checked()
         if not queue:
             QMessageBox.information(
@@ -1011,6 +1029,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def after_score(self, res):
+        """Report the outcome once a scoring run has finished."""
         self.bar.hide(); self.b_score.setEnabled(True)
         if not isinstance(res, list) or not res:
             return
@@ -1021,10 +1040,9 @@ class MainWindow(QMainWindow):
             r, lab, raw = d["rec"], d["labels"], d["raw"]
             arch = core.architecture(lab)
             over = int((lab != raw).sum())
-            # Report velocity from the features actually computed, not from what
-            # discovery found: the feature pipeline runs its own timestamp lookup
-            # (validated by exact array-length match), so it can succeed where the
-            # folder-only scan in the Project tab found nothing.
+            # Report movement from the features that were actually computed,
+            # not from what the Project tab found on disk. The two can disagree,
+            # and the features are the ones that count.
             vel = ("log_velocity" in d["feat"].columns
                    and bool(np.isfinite(d["feat"]["log_velocity"]
                                         .to_numpy(dtype=float)).any()))
@@ -1082,6 +1100,7 @@ class MainWindow(QMainWindow):
         return manual
 
     def rebuild_review(self):
+        """Redraw the Review tab for the recording currently chosen."""
         if self.labels is None:
             return
         manual = self._manual_mask()
@@ -1153,6 +1172,7 @@ class MainWindow(QMainWindow):
         self.log(f"launched scorer on {r.name} (pid {proc.pid})")
 
     def on_reload_corrections(self):
+        """Pull the user's corrections back in from the manual scorer."""
         if not self.rec_name or self.project is None or self.store is None:
             return
         r = self.project.get(self.rec_name)
@@ -1184,6 +1204,7 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- fine-tune
     def on_finetune(self):
+        """Adapt the model to the corrections made so far."""
         if not self.project or self.runner.busy():
             return
         if not self.ensure_frame_times(self.checked()):
@@ -1259,6 +1280,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def after_finetune(self, res):
+        """Report the outcome of a fine-tuning run, and offer the new model."""
         self.bar_ft.hide(); self.b_ft.setEnabled(True)
         if not isinstance(res, dict):
             return
@@ -1281,6 +1303,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    """Start the desktop app."""
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()

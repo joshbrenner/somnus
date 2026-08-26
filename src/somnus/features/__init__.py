@@ -1,48 +1,24 @@
-"""Tiered, bandwidth-aware feature extraction for a generalizable sleep scorer.
+"""Turn raw EEG, EMG and video into the numbers the scorer reads.
 
-GOAL
-----
-One model that runs on whatever data you give it: it uses high-frequency EEG and
-video when they exist, and degrades gracefully (not silently wrongly) when they
-do not. Achieved by splitting features into TIERS by frequency, measuring each
-recording's true usable bandwidth, and emitting NaN + an availability indicator
-for tiers a recording cannot support.
+One row per 4-second epoch: how much power sits in each frequency band, how
+active the muscles are, and how fast the animal is moving.
 
-WHY TIERS (measured, not assumed)
----------------------------------
-Bandwidth and mains contamination vary drastically between rigs. Measured
-examples, all of which the scorer has to handle:
-  * A 5 kHz rig: effective edge ~1700-2500 Hz, 60 Hz mains +3 to +13 dB with a
-    120 Hz harmonic, no 50 Hz.
-  * A 128 Hz recording: edge ~64 Hz, 50 Hz mains up to +21 dB.
-  * A recording whose EEG was lowpass-filtered near 25-26 Hz: it tracks an
-    unfiltered one up to 25 Hz, then falls off a cliff (-13 dB by 28 Hz). Its
-    EMG is NOT filtered (edge 64 Hz), so EEG and EMG bandwidth must be measured
-    separately.
-The only frequency range every source genuinely measures is therefore <= 25 Hz.
+Recording equipment varies enormously in what it can actually measure. A 5 kHz
+rig captures frequencies into the thousands; a 128 Hz one stops at 64; some
+labs filter their EEG at 25 Hz. So features are grouped into TIERS by frequency,
+each recording's real usable range is measured from the data itself, and any
+tier it cannot support is left blank rather than filled with a wrong number.
+Every recording supports tier 1, which is why one model can score all of them.
 
-TIERS
-  1  <= 25 Hz   delta .5-4, theta 5-10, alpha 10-15, beta 15-25   (universal)
-  2  25-45 Hz   high-beta / low-gamma
-  3  45-63 Hz   gamma (fits inside a 128 Hz recording's Nyquist)
-  4  63-150 Hz  high gamma + wideband EMG              (high-rate rigs only)
+    tier 1   up to 25 Hz    delta, theta, alpha, beta   (every recording)
+    tier 2   25-45 Hz       high beta / low gamma
+    tier 3   45-63 Hz       gamma
+    tier 4   63-150 Hz      high gamma and wideband EMG (high-rate rigs only)
 
-Tier-1 relative powers are normalized to the TIER-1 SUM only, so their meaning is
-identical no matter which higher tiers exist. Higher tiers are expressed as
-ratios to that same tier-1 total, so they are comparable too.
+Band powers are given relative to the tier-1 total, so they mean the same thing
+whether or not the higher tiers exist.
 
-MAINS
-Rather than time-domain notch filtering (expensive on 75M samples and prone to
-edge transients), mains bins are interpolated across in the PSD before band
-integration. Exact, cheap, and applied identically everywhere.
-
-IMPLEMENTATION
-PSD is a Welch estimate from ``openseize.spectra.estimators.psd``, called with
-``resolution = sfreq / nperseg`` on a window whose length equals nperseg, so
-there is exactly one segment per epoch. Bands are integrated with
-``np.trapezoid``.
-
-Everything here is dataset-agnostic: arrays in, features out.
+Nothing here knows about files or datasets: arrays in, features out.
 """
 from __future__ import annotations
 
@@ -53,11 +29,11 @@ from openseize.spectra.estimators import psd as _os_psd
 
 def _welch(x: np.ndarray, sfreq: float, nperseg: int,
            axis: int = -1) -> tuple[np.ndarray, np.ndarray]:
-    """Welch PSD, one independent estimate per row for 2-D input.
+    """Measure how much power the signal carries at each frequency.
 
-    Accepts 1-D (n_samples,) or 2-D (n_epochs, n_samples) input and returns
-    (freqs, psd) with psd shaped like the input but with the sample axis
-    replaced by frequency -- i.e. one independent PSD per epoch.
+    Takes one stretch of signal, or a stack of them (one row per epoch), and
+    returns the frequencies and the power at each. Rows are measured
+    independently, so one epoch never influences another.
     """
     arr = np.asarray(x, dtype=float)
     squeeze = arr.ndim == 1
@@ -83,8 +59,8 @@ TIER_BANDS = {           # tier -> (name, lo, hi)
 }
 TIER_TOP = {1: TIER1_TOP, 2: 45.0, 3: 63.0, 4: 150.0}
 
-# EMG bands: low/mid are universal (every source reaches 64 Hz on EMG),
-# high requires a wideband recording.
+# EMG bands. Low and mid are available on any recording; high needs one that
+# samples fast enough to reach 300 Hz.
 EMG_BANDS = {"emg_low": (5.0, 25.0), "emg_mid": (30.0, 63.0),
              "emg_high": (63.0, 300.0)}
 EMG_TIER = {"emg_low": 1, "emg_mid": 3, "emg_high": 4}
@@ -92,22 +68,21 @@ EMG_TIER = {"emg_low": 1, "emg_mid": 3, "emg_high": 4}
 MAINS_HZ = (50.0, 60.0, 100.0, 120.0, 150.0, 180.0)
 MAINS_HALFWIDTH = 1.5
 
-# Features that are amplitude-like and therefore z-scored within recording.
+# Features whose absolute size depends on the equipment, so they are rescaled
+# against their own recording.
 AMPLITUDE_FEATURES = ["t1_power_log", "emg_low_log", "emg_mid_log",
                       "emg_high_log", "log_velocity"]
 
-# Ratio/shape features. In principle self-normalizing, but they still carry
-# large per-recording offsets across sites (delta_rel differs by ~1 SD between
-# sources, because highpass corners range from none at all to -26 dB at 0.5 Hz).
-# z-scoring these within recording as well removes the site offset while
-# preserving the within-recording modulation that identifies state. Both raw and
-# _z versions are emitted.
+# Band ratios and shape descriptors. These are rescaled against their own
+# recording too -- see zscore_target_columns() for why. Both the raw and the
+# rescaled version are kept.
 RATIO_FEATURES = ([f"{b}_rel" for b in TIER1_ORDER]
                   + ["theta_delta_log", "delta_index", "emg_ratio_hi_lo"]
                   + [f"{TIER_BANDS[t][0]}_ratio_log" for t in (2, 3, 4)])
 
-# Optional feature blocks -> the availability indicator that guards them.
-# Used by the model to know when a value is genuinely absent.
+# Features that not every recording can supply, each paired with the column
+# that records whether this one could. Lets the model tell "no movement" from
+# "no camera".
 OPTIONAL_BLOCKS = {
     "tier2": ["gamma1_ratio_log"],
     "tier3": ["gamma2_ratio_log", "emg_mid_log"],
@@ -123,21 +98,16 @@ def detect_bandwidth(signal: np.ndarray, sfreq: float,
                      floor_db: float = -45.0,
                      start_hz: float = 20.0,
                      max_seconds: float = 900.0) -> float:
-    """Effective upper edge (Hz) of genuine signal, i.e. the filter corner.
+    """Find the highest frequency this recording genuinely measured.
 
-    EEG power falls with frequency even with no filter (1/f), so a fixed dB
-    threshold would mistake natural decay for filtering: an unfiltered recording
-    can sit ~-18 dB at 63 Hz and still be entirely real. What distinguishes an
-    anti-alias/lowpass filter is a sudden *change of slope* -- a cliff.
+    Above some point every recording is showing filter rolloff rather than
+    brain activity, and features computed up there would be noise. EEG power
+    naturally falls off with frequency, so a simple power threshold cannot tell
+    real signal from a filter. What gives a filter away is the spectrum falling
+    off a cliff, so this scans upward for a sudden and sustained steepening.
 
-    Detection: smooth the mains-suppressed spectrum, then scan upward from
-    `start_hz` for the first frequency where the local slope is steeper than
-    `slope_db_per_hz` and stays steep in the following window (sustained cliff),
-    or where power falls below `floor_db` relative to the 8-20 Hz reference.
-
-    Calibrated against measured data: a lowpass-filtered source falls
-    ~-3.4 dB/Hz across 25-30 Hz (correctly flagged, corner ~26 Hz) whereas an
-    unfiltered one falls ~-0.6 dB/Hz across 25-40 Hz (correctly passed).
+    Calibrated on real recordings: a filtered one drops ~3.4 dB per Hz at its
+    corner, an unfiltered one only ~0.6 dB per Hz.
     """
     n = min(len(signal), int(max_seconds * sfreq))
     x = np.asarray(signal[:n], dtype=float)
@@ -171,22 +141,21 @@ def detect_bandwidth(signal: np.ndarray, sfreq: float,
 
 
 def available_tiers(edge_hz: float) -> set[int]:
-    """Which spectral tiers a recording with this EEG edge can support.
+    """Which frequency tiers this recording can support, given its upper edge.
 
-    Tier 1 (<=25 Hz) is unconditional: it is the universal baseline, and a
-    recording that could not support it would be unusable for sleep scoring at
-    all. This also absorbs the fact that the cliff detector fires at the *onset*
-    of a rolloff, so a source filtered near 25 Hz measures ~24 Hz even though its
-    25 Hz content is as strong as an unfiltered source's.
+    Tier 1 always counts. It is the baseline every recording shares, and one
+    that could not manage it would be unusable for sleep scoring anyway.
     """
     return {1} | {t for t, top in TIER_TOP.items()
                   if t != 1 and top <= edge_hz + 1e-9}
 
 
 def available_emg_bands(edge_hz: float) -> set[str]:
-    """Which EMG bands a recording supports, gated by the EMG channel's own
-    bandwidth. Must be measured separately from EEG: a source may lowpass its
-    EEG at ~25 Hz while leaving its EMG intact to 64 Hz."""
+    """Which EMG bands this recording can support.
+
+    Measured from the EMG channel itself, not the EEG: a lab may filter its EEG
+    heavily and leave the EMG untouched.
+    """
     ok = {"emg_low"}                     # 5-25 Hz: always available
     for name, (lo, hi) in EMG_BANDS.items():
         if name == "emg_low":
@@ -200,9 +169,12 @@ def available_emg_bands(edge_hz: float) -> set[str]:
 def suppress_mains(freqs: np.ndarray, psd: np.ndarray,
                    mains: tuple[float, ...] = MAINS_HZ,
                    halfwidth: float = MAINS_HALFWIDTH) -> np.ndarray:
-    """Linearly interpolate the PSD across mains bins (and harmonics).
+    """Remove mains hum from the spectrum.
 
-    psd may be 1D (n_freq) or 2D (n_epochs, n_freq); returns a copy.
+    Electrical noise at 50 or 60 Hz and its harmonics can be far stronger than
+    the brain activity around it. Those frequencies are replaced by a straight
+    line drawn between their neighbours, which is cheaper than filtering the
+    signal itself and cannot introduce edge artifacts.
     """
     out = np.array(psd, dtype=float, copy=True)
     nyq = freqs[-1]
@@ -228,6 +200,7 @@ def suppress_mains(freqs: np.ndarray, psd: np.ndarray,
 
 def _band_power(freqs: np.ndarray, psd: np.ndarray,
                 lo: float, hi: float) -> np.ndarray | float:
+    """Total power between two frequencies, or blank if the band is out of range."""
     hi = min(hi, freqs[-1])
     if hi <= lo:
         return np.full(psd.shape[0], np.nan) if psd.ndim == 2 else np.nan
@@ -243,16 +216,21 @@ def _band_power(freqs: np.ndarray, psd: np.ndarray,
 # ------------------------------------------------------------ epoch layout
 def n_epochs_for(n_samples: int, sfreq: float,
                  epoch_sec: float = EPOCH_SEC) -> int:
+    """How many whole epochs fit in a recording of this length."""
     return int(np.floor(n_samples / sfreq / epoch_sec))
 
 
 def epoch_times(n_epochs: int, epoch_sec: float = EPOCH_SEC) -> np.ndarray:
+    """The start time in seconds of every epoch."""
     return np.arange(n_epochs, dtype=float) * epoch_sec
 
 
 def _iter_windows(sig: np.ndarray, win: int, n_epochs: int,
                   block: int = 400):
-    """Yield (start_epoch, (n,win) array) blocks to bound peak memory."""
+    """Hand out the signal a few hundred epochs at a time.
+
+    A long recording at a high sample rate will not fit in memory all at once.
+    """
     n_valid = min(n_epochs, len(sig) // win)
     for s in range(0, n_valid, block):
         e = min(s + block, n_valid)
@@ -263,10 +241,11 @@ def _iter_windows(sig: np.ndarray, win: int, n_epochs: int,
 def eeg_features(eeg: np.ndarray, sfreq: float, n_epochs: int,
                  tiers: set[int], epoch_sec: float = EPOCH_SEC
                  ) -> pd.DataFrame:
-    """Tier-aware EEG features. Unsupported tiers are left as NaN.
+    """Measure the EEG frequency bands for every epoch.
 
-    Tier-1 relative powers use the tier-1 sum as denominator, so they mean the
-    same thing regardless of which higher tiers exist.
+    Each band is reported as a share of the tier-1 total, so the numbers mean
+    the same thing whether or not the recording reaches the higher tiers. Bands
+    the recording cannot support are left blank.
     """
     win = int(round(epoch_sec * sfreq))
     cols = ([f"{b}_rel" for b in TIER1_ORDER]
@@ -288,7 +267,7 @@ def eeg_features(eeg: np.ndarray, sfreq: float, n_epochs: int,
         d = bp["delta"] + 1e-30
         th = bp["theta"] + 1e-30
         out.loc[idx, "theta_delta_log"] = np.log10(th / d)
-        # delta index re-based on the tier-1 total (comparable across sources)
+        # how far delta dominates the other bands, on a -1 to 1 scale
         out.loc[idx, "delta_index"] = (d - (t1 - d)) / t1
         out.loc[idx, "t1_power_log"] = np.log10(t1)
 
@@ -304,17 +283,13 @@ def eeg_features(eeg: np.ndarray, sfreq: float, n_epochs: int,
 def emg_features(emg: np.ndarray, sfreq: float, n_epochs: int,
                  bands: set[str], epoch_sec: float = EPOCH_SEC
                  ) -> pd.DataFrame:
-    """EMG band powers (log). Bands beyond the EMG channel's edge stay NaN.
+    """Measure muscle activity in several frequency bands, for every epoch.
 
-    `bands` comes from available_emg_bands() on the EMG channel's OWN measured
-    bandwidth, not the EEG's.
-
-    EMG spectral shape varies hugely between recordings and labs -- one animal
-    can put ~50% of EMG power below 25 Hz while another puts ~75% above 90 Hz
-    and a third 99% above 45 Hz. So no single band is comparable in
-    absolute terms; several are emitted and each is z-scored within recording
-    downstream. What carries the atonia signal is modulation over time within a
-    recording, not absolute level.
+    Where EMG power sits varies wildly between animals and electrode placements,
+    so no single band is comparable across recordings. Several are measured and
+    each is later compared against that recording's own average. What identifies
+    REM is muscle tone dropping relative to the rest of the recording, not any
+    absolute level.
     """
     win = int(round(epoch_sec * sfreq))
     cols = [f"{k}_log" for k in EMG_BANDS] + ["emg_ratio_hi_lo"]
@@ -333,7 +308,7 @@ def emg_features(emg: np.ndarray, sfreq: float, n_epochs: int,
             p = _band_power(f, psd, lo, hi)
             vals[k] = p
             out.loc[idx, f"{k}_log"] = np.log10(np.clip(p, 1e-30, None))
-        # scale-free shape descriptor, available whenever both bands are
+        # where EMG power sits, high versus low, independent of overall size
         if "emg_mid" in vals and "emg_low" in vals:
             out.loc[idx, "emg_ratio_hi_lo"] = np.log10(
                 np.clip(vals["emg_mid"], 1e-30, None)
@@ -346,10 +321,11 @@ def velocity_features(coords: np.ndarray | None,
                       frame_times: np.ndarray | None,
                       n_epochs: int,
                       epoch_sec: float = EPOCH_SEC) -> pd.DataFrame:
-    """Mean speed per epoch = path length / elapsed time within the epoch.
+    """How fast the animal moved, averaged over each epoch.
 
-    Robust to the irregular frame intervals caused by dropped frames. Requires
-    TRUE per-frame times; a constant-fps assumption misplaces frames by minutes.
+    Distance travelled divided by time elapsed, using the true time of every
+    video frame. Cameras drop frames, so the real intervals are uneven and
+    assuming a fixed frame rate would misplace positions by minutes.
     """
     out = pd.DataFrame(index=np.arange(n_epochs),
                        columns=["velocity", "log_velocity"], dtype=float)
@@ -380,10 +356,11 @@ def velocity_features(coords: np.ndarray | None,
 # ------------------------------------------------------------------ context
 def add_temporal_context(df: pd.DataFrame, columns: list[str],
                          windows: tuple[int, ...] = (3, 15)) -> pd.DataFrame:
-    """Centered rolling mean/std per feature: label-free temporal context.
+    """Add each feature's local average and variability over nearby epochs.
 
-    NaN-safe: a column that is entirely NaN (unsupported tier) yields NaN
-    context, which the missing-indicator machinery then handles.
+    Sleep states are defined partly by what surrounds them, so every feature
+    also gets a short-window and a long-window summary of its neighbourhood.
+    This uses no labels, only the signal.
     """
     out = df.copy()
     cols = [c for c in columns if c in df.columns]
@@ -400,11 +377,12 @@ def add_temporal_context(df: pd.DataFrame, columns: list[str],
 def zscore_within(df: pd.DataFrame, columns: list[str],
                   group_col: str = "recording",
                   suffix: str = "_z") -> pd.DataFrame:
-    """Within-recording z-score. Unsupervised, so no label leakage.
+    """Rescale each feature against that recording's own average and spread.
 
-    Removes per-recording amplitude offsets (electrode impedance, gain,
-    filtering), which is what lets EMG/velocity/absolute power transfer across
-    animals and labs.
+    Electrode impedance, amplifier gain and filtering shift every recording by
+    a different amount, so raw values are not comparable between animals. What
+    is comparable is how a feature moves relative to the rest of its own
+    recording, which is what this measures.
     """
     out = df.copy()
     cols = [c for c in columns if c in df.columns]
@@ -416,17 +394,18 @@ def zscore_within(df: pd.DataFrame, columns: list[str],
 
 
 def amplitude_columns(df: pd.DataFrame) -> list[str]:
-    """Amplitude-like columns (incl. their context variants) to z-score."""
+    """The features whose absolute size depends on the equipment used."""
     return [c for c in df.columns
             if any(c == a or c.startswith(a + "_") for a in AMPLITUDE_FEATURES)]
 
 
 def zscore_target_columns(df: pd.DataFrame) -> list[str]:
-    """All columns to z-score within recording: amplitude AND ratio features.
+    """Every feature that gets rescaled against its own recording.
 
-    Ratio features are included because they still carry ~1 SD site offsets
-    (differing highpass corners and montages), which a model can latch onto as a
-    site fingerprint instead of learning state.
+    Band ratios are included as well as raw amplitudes. In principle a ratio
+    should already be comparable between labs, but in practice differences in
+    filtering and electrode placement shift them enough that a model could learn
+    to recognise the lab instead of the sleep state.
     """
     roots = AMPLITUDE_FEATURES + RATIO_FEATURES
     return [c for c in df.columns
@@ -440,11 +419,12 @@ def labels_from_onehot(df: pd.DataFrame, n_epochs: int, bin_sec: float = 0.5,
                        state_cols: tuple[str, ...] = ("Wake", "NREM", "REM"),
                        exclude_cols: tuple[str, ...] = ("Artifact", "Unclear"),
                        ) -> np.ndarray:
-    """Majority label per epoch from sub-epoch one-hot bins.
+    """Read manual scoring, collapsing its fine bins onto whole epochs.
 
-    Epochs containing excluded or unlabeled bins, or failing the purity
-    threshold, become None: they are dropped from training (no label noise) but
-    can still be predicted, keeping the time series contiguous.
+    Scoring files mark shorter stretches than one epoch, so an epoch takes the
+    state that most of it agrees on. Epochs that are mixed, unscored, or marked
+    as artifact get no label at all: they are still scored by the model, but
+    never used to train it.
     """
     per = int(round(epoch_sec / bin_sec))
     have = [c for c in state_cols if c in df.columns]
@@ -467,7 +447,7 @@ def labels_from_onehot(df: pd.DataFrame, n_epochs: int, bin_sec: float = 0.5,
 
 def labels_from_stage_events(onsets, stages, n_epochs: int, mapping: dict,
                              epoch_sec: float = EPOCH_SEC) -> np.ndarray:
-    """Labels from BIDS-style one-row-per-epoch events (onset + stage code)."""
+    """Read manual scoring from a BIDS events table, one row per epoch."""
     out = np.full(n_epochs, None, dtype=object)
     for o, s in zip(np.asarray(onsets, dtype=float), np.asarray(stages)):
         e = int(round(o / epoch_sec))
