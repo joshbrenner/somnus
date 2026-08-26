@@ -8,9 +8,14 @@ class VideoHandler:
 
     Seeks by real timestamp rather than frame number, so playback stays lined
     up with the EEG even when the camera dropped frames."""
-    def __init__(self, video_path):
-        """Open the video and work out when each frame was captured."""
+    def __init__(self, video_path, cache_dir=None):
+        """Open the video and work out when each frame was captured.
+
+        `cache_dir` is where extracted frame times may be saved. Leave it None
+        and nothing is written to disk at all.
+        """
         self.video_path = video_path
+        self.cache_dir = cache_dir
         
         try:
             self.container = av.open(video_path)
@@ -38,20 +43,34 @@ class VideoHandler:
         self.current_time = -1.0
         self.last_frame = np.zeros((300, 400, 3), dtype=np.uint8)
         
-        # Initialization cascade: .npy -> PyAV extraction -> Fallback
+        # Frame times: a file beside the video, then the cache, then extract
         self.timestamps = self._load_or_extract_timestamps()
         
         # Setup the initial decoder generator
         self.decoder = self.container.decode(self.stream)
 
     def _load_or_extract_timestamps(self):
-        """Attempts to load, then extract, then fallback for timestamps."""
-        ts_path = os.path.splitext(self.video_path)[0] + '_timestamps.npy'
-        if os.path.exists(ts_path):
-            print(f"VideoHandler: Loaded exact hardware timestamps from {os.path.basename(ts_path)}")
-            return np.load(ts_path)
+        """Find the time of every frame: from a file, from the cache, or by reading the video.
 
-        print("VideoHandler: No .npy found. Attempting PyAV exact timestamp extraction...")
+        A `*_timestamps.npy` sitting beside the video is the camera's own record
+        and is preferred. Failing that, the times are read out of the video
+        itself, which is quick because it needs no decoding. That result is kept
+        in the project cache if there is one -- never beside the video, because
+        source folders are read-only, and because a file written there would
+        later be mistaken for the camera's own.
+        """
+        beside = os.path.splitext(self.video_path)[0] + '_timestamps.npy'
+        if os.path.exists(beside):
+            print(f"VideoHandler: Using the camera's frame times from "
+                  f"{os.path.basename(beside)}")
+            return np.load(beside)
+
+        cached = self._cache_path()
+        if cached and os.path.exists(cached):
+            print(f"VideoHandler: Using frame times cached from an earlier run")
+            return np.load(cached)
+
+        print("VideoHandler: No frame times on disk. Reading them from the video...")
         try:
             pts_list = []
             # Demuxing is incredibly fast because it skips video decoding
@@ -70,15 +89,27 @@ class VideoHandler:
             pts_list.sort()
             ts_array = np.array(pts_list, dtype=np.float64)
             
-            # Auto-save so we don't have to do this again
-            np.save(ts_path, ts_array)
-            print(f"VideoHandler: Successfully extracted and saved {len(ts_array)} exact timestamps.")
-            
+            # Keep them for next time, but only somewhere we are allowed to
+            # write. With no cache we simply read them again on the next open.
+            if cached:
+                os.makedirs(os.path.dirname(cached), exist_ok=True)
+                np.save(cached, ts_array)
+                print(f"VideoHandler: Read {len(ts_array)} frame times and cached them.")
+            else:
+                print(f"VideoHandler: Read {len(ts_array)} frame times.")
+
             return ts_array
             
         except Exception as e:
             print(f"VideoHandler: PyAV extraction failed: {e}")
             return self._generate_cfr_fallback()
+
+    def _cache_path(self):
+        """Where extracted frame times may be stored, or None if nowhere is safe."""
+        if not self.cache_dir:
+            return None
+        base = os.path.splitext(os.path.basename(self.video_path))[0]
+        return os.path.join(self.cache_dir, base + '_timestamps.npy')
 
     def _generate_cfr_fallback(self):
         """Generates a linear array assuming perfectly stable framerate."""

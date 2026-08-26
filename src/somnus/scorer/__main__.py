@@ -541,7 +541,13 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
     cv2.moveWindow(WINDOW_NAME, 0, 40)
     cv2.setMouseCallback(WINDOW_NAME, on_mouse, param=state)
 
-    video_engine = VideoHandler(video_path)
+    # When the Somnus app launches this, the scoring CSV it hands us lives in
+    # <project>/labels/, so the project's cache is its sibling. Opened on its
+    # own there is no project, and nothing is written to disk.
+    labels_dir = os.path.dirname(os.path.abspath(csv_path))
+    cache_dir = os.path.join(os.path.dirname(labels_dir), "cache") \
+        if os.path.basename(labels_dir) == "labels" else None
+    video_engine = VideoHandler(video_path, cache_dir=cache_dir)
     
     eeg_gain = 1.0
     emg_gain = 1.0
