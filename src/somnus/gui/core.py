@@ -622,6 +622,9 @@ def read_viewer_labels(project: "Project", recording: Recording,
         cur_state = cur["state"].iloc[0] if len(cur) else None
         cur_src = cur["source"].iloc[0] if len(cur) else None
 
+        # Two different notes the user can leave -- bad signal, or physiology
+        # they could not call -- but both mean the same thing here: keep this
+        # epoch out of training.
         marked = any(col in blk and blk[col].sum() > 0
                      for col in ("Artifact", "Unclear"))
         if marked:

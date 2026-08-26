@@ -96,6 +96,9 @@ class SleepReviewState:
         # Default Brush Size
         self.brush_size_sec = max(self.bin_step, 1.0)
         
+        # Older scoring files predate these two columns, so add them empty
+        # rather than fail. 'Unclear' marks an epoch as ambiguous, 'Confirmed'
+        # marks one the user has explicitly agreed with.
         if 'Unclear' not in self.df.columns:
             self.df['Unclear'] = 0
         # Manual affirmation of the label already present. Round-trips through
@@ -265,6 +268,9 @@ class SleepReviewState:
 
     def _calculate_bouts(self):
         """Group runs of the same state into bouts, for the navigation buttons."""
+        # One painted column per state, so read them back into a single label.
+        # 'Unknown' is not a brush and has no column: it is what a bin gets when
+        # nothing has been painted on it at all.
         conditions = [
             self.df['Artifact'] == 1,
             self.df['REM'] == 1,
@@ -339,6 +345,8 @@ class SleepReviewState:
             # never treated as reviewed, and never becomes a training target.
             self.df.loc[mask, 'Confirmed'] = 1
         else:
+            # The paintable states are mutually exclusive, so clear them all
+            # before setting the new one. Erase clears and sets nothing.
             for state_name in ['Artifact', 'Wake', 'NREM', 'REM', 'Unclear']:
                 self.df.loc[mask, state_name] = 0
 

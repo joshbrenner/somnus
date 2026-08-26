@@ -4,19 +4,23 @@ from somnus.scorer.signal_utils import get_nice_number
 
 WINDOW_NAME = "Sleep Scorer Validator"
 
+# Timeline colours. The first five are things you can paint; the last two are
+# only ever displayed, never painted.
 COLORS = {
+    # --- paintable: these are brushes, and each is a column in the scored CSV
     'Wake': (50, 200, 50),
     'NREM': (200, 100, 50),
     'REM': (50, 50, 200),
-    'Artifact': (0, 200, 200),
-    'Unclear': (200, 50, 200),
-    'Unknown': (50, 50, 50),
-    # Epochs whose label the smoothing changed.
-    'HMM_Smoothed': (230, 200, 60),
+    'Artifact': (0, 200, 200),      # bad signal: exclude this epoch
+    'Unclear': (200, 50, 200),      # ambiguous physiology: exclude this epoch
+    # --- display only: worked out while drawing, never painted and never stored
+    'Unknown': (50, 50, 50),        # nothing scored here yet
+    'HMM_Smoothed': (230, 200, 60),  # label came from smoothing, not the model
 }
 
-# States you can navigate between (Artifact/Unclear/Unknown are brushes, not
-# navigable states, so they get no jump buttons).
+# The states the bout navigation buttons step between. Artifact and Unclear are
+# excluded because they mark epochs to throw away rather than sleep to look at,
+# and Unknown is not a state at all -- just the absence of one.
 NAV_LABELS = ['Wake', 'NREM', 'REM']
 
 MENU_HEADERS = {
@@ -274,8 +278,7 @@ def draw_sidebar(state, h, w_side):
     cv2.line(img, (10, 35), (w_side-10, 35), (100, 100, 100), 1)
     cv2.putText(img, "Click below to Jump:", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
     
-    # Only the three scored states get jump buttons: Artifact / Unclear /
-    # Unknown are brushes, not states you navigate between.
+    # Only the three sleep states get jump buttons -- see NAV_LABELS.
     valid_labels = NAV_LABELS
 
     for idx, label in enumerate(valid_labels):
