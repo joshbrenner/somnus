@@ -236,12 +236,7 @@ class SleepReviewState:
                   f"certainty threshold.")
             return
 
-        # Anchor on the CENTER of the visible window, not its left edge. A jump
-        # centers the target, so current_time_sec ends up half a window *before*
-        # it; searching from there would keep re-finding the same epoch whenever
-        # low-certainty epochs are closer together than half a window (which they
-        # usually are). Half an epoch of tolerance stops the epoch you are already
-        # centered on from matching itself.
+        # Anchor on the CENTER of the visible window, not its left edge. 
         if abs(self.playback_offset_sec) > 1e-9:
             anchor = self.current_time_sec + self.playback_offset_sec
         else:
@@ -302,8 +297,6 @@ class SleepReviewState:
 
     def jump_to_adjacent_epoch(self, direction='next'):
         """Step to the next or previous bout boundary.
-
-        Despite the name, this moves between bouts, not epochs.
         """
         exact_time = self.current_time_sec + self.playback_offset_sec
         current_bout_mask = self.bouts['Start_Time'] <= exact_time
