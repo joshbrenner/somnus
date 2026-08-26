@@ -1,14 +1,12 @@
 """Score a recording: assign Wake, NREM or REM to each epoch.
-
-This is the part of Somnus that does the actual scoring. Give it the trained
+Where the actual scoring happens. Give it the trained
 model and a table of features (one row per epoch, produced by
 `somnus.data.datasets.featurize`) and it returns a sleep state for every row,
 along with how confident it was.
 
-Scoring happens in two passes. First each epoch is judged on its own, from its
-features alone. Then the sequence is smoothed over time, because sleep comes in
-stretches: a lone epoch of REM in the middle of Wake is far more likely to be a
-mistake than a real event.
+Scoring happens in two passes. First each epoch is judged from its features,
+then the sequence is smoothed over time: a lone epoch of REM in the middle of Wake 
+is far more likely to be a mistake than a real event.
 
 Using it from Python:
     from somnus import load_model, predict
@@ -93,12 +91,14 @@ def probabilities(art: dict, df: pd.DataFrame) -> np.ndarray:
 
 
 def viterbi(log_em: np.ndarray, A: np.ndarray, log_pi: np.ndarray) -> np.ndarray:
-    """Find the most likely run of states across the whole recording.
+    """Choose the single best run of states for the whole recording at once.
 
-    Instead of taking the best state for each epoch in isolation, this weighs
-    each epoch's own evidence against how often sleep really moves from one
-    state to another, and returns the sequence that fits both best. It is what
-    stops the scoring from flickering between states epoch by epoch.
+    Every transition carries a cost (see scale_transitions): staying in
+    the same state is nearly free, while a move like Wake straight into REM
+    is essentially impossible. This function finds the sequence with the lowest total 
+    cost over the entire recording, so a transition is drawn only where the evidence for 
+    it outweighs the cost of making it. Optional in GUI.
+
     """
     n, k = log_em.shape
     logA = np.log(np.clip(A, 1e-300, None))
@@ -122,10 +122,10 @@ def viterbi(log_em: np.ndarray, A: np.ndarray, log_pi: np.ndarray) -> np.ndarray
 def scale_transitions(A: np.ndarray, stickiness: float = 1.0) -> np.ndarray:
     """Adjust how strongly the scoring resists changing state.
 
-    `stickiness` is a single dial:
+    state `stickiness` is controlled on a single dial :
 
-        0     ignore timing altogether; every epoch is scored on its own
-        1     use the transition rates measured from real scored data (default)
+        0     ignore timing altogether; every epoch is scored on its own evidence
+        1     use the preloaded transition rates found in training data (default)
         > 1   hold each state longer, giving fewer and longer bouts
         < 1   switch more readily, giving more and shorter bouts
 
@@ -205,9 +205,6 @@ def main() -> None:
                          "bouts")
     args = ap.parse_args()
 
-    # Reading an EDF and computing features needs far more than this module
-    # does, so it is imported only here, where the command line actually needs
-    # it. Using somnus.predict from Python stays lightweight.
     from somnus.data import datasets as B
 
     art = load_model(args.model)
