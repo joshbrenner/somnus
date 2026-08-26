@@ -1,7 +1,7 @@
 """Adapt the default model to your own dataset.
 
 The base logistic model is a starting point. If your animals do not look
-like the mice it was trained on -- if you're using a disease model with disrupted
+like the mice it was trained on -- for example, if you're using a disease model with disrupted
 sleep -- this adjusts the logistic model toward your data.
 
 YOU DECIDE:
