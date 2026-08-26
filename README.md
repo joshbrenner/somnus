@@ -1,5 +1,5 @@
 <h1 align="center">
-    <img src="https://github.com/joshbrenner/somnus/raw/master/imgs/logo.png"
+    <img src="https://github.com/joshbrenner/somnus/raw/main/imgs/logo.png"
     style="width:500px;height:auto;" alt="Somnus"/>
 </h1>
 

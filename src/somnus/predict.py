@@ -1,19 +1,21 @@
-"""Scorer for the Somnus model: JSON artifact + feature table -> states.
+"""Score a recording: assign Wake, NREM or REM to each epoch.
 
-Applies the logistic model to a per-epoch feature table and runs the HMM/Viterbi
-temporal decode, returning one state per epoch. This is the module the GUI and
-any batch-scoring tool should call.
+This is the part of Somnus that does the actual scoring. Give it the trained
+model and a table of features (one row per epoch, produced by
+`somnus.data.datasets.featurize`) and it returns a sleep state for every row,
+along with how confident it was.
 
-The feature table must be produced by `somnus.data.datasets.featurize()`, so
-that column names and units match the artifact.
+Scoring happens in two passes. First each epoch is judged on its own, from its
+features alone. Then the sequence is smoothed over time, because sleep comes in
+stretches: a lone epoch of REM in the middle of Wake is far more likely to be a
+mistake than a real event.
 
-Usage as a library:
+Using it from Python:
     from somnus import load_model, predict
-    art = load_model()                 # the packaged v1.0 artifact
+    art = load_model()                 # the model that ships with Somnus
     labels, proba = predict(art, feature_df)
 
-Usage as a CLI (scores one EDF and, if a scoring file is supplied, reports
-agreement with it):
+Using it from the command line:
     python -m somnus.predict --score myrec.edf
     python -m somnus.predict --score myrec.edf --out scored.csv
 """
@@ -32,7 +34,10 @@ DEFAULT_ARTIFACT = str(_resource_files("somnus.models")
 
 
 def load_model(path: str | None = None) -> dict:
-    """Load a portable JSON artifact; None loads the packaged released model."""
+    """Load a trained model from a JSON file.
+
+    With no path, loads the model that ships with Somnus.
+    """
     with open(path or DEFAULT_ARTIFACT) as fh:
         art = json.load(fh)
     if art.get("format_version") != 1:
@@ -41,11 +46,16 @@ def load_model(path: str | None = None) -> dict:
 
 
 def design_matrix(art: dict, df: pd.DataFrame) -> np.ndarray:
-    """Center/scale each feature where it is available, zero where it is not.
+    """Lay the recording's features out in the order the model expects them.
 
-    A feature that is absent (or non-finite, or whose guard column says its tier
-    was unavailable in this recording) is set to exactly 0 *after* centering, so
-    it contributes nothing to the logit rather than biasing it.
+    Each feature is put on a common scale, so that recordings made on different
+    equipment can be compared. Anything this recording could not measure is left
+    at zero, which means it neither pushes the answer one way nor the other.
+    That covers a feature that is missing outright, a gap in the data, and a
+    frequency band the recording equipment never reached.
+
+    This is what lets one model score both a 128 Hz EEG-only recording and a
+    5 kHz recording with EMG and video, without retraining for either.
     """
     cols = art["columns"]
     X = np.zeros((len(df), len(cols)), dtype=float)
@@ -54,6 +64,8 @@ def design_matrix(art: dict, df: pd.DataFrame) -> np.ndarray:
             continue
         v = df[c].to_numpy(dtype=float)
         ok = np.isfinite(v)
+        # Each feature may have a companion column recording whether this
+        # recording could measure it at all. Zero there means "not measured".
         g = art["guards"].get(c)
         if g and g in df.columns:
             ok &= df[g].to_numpy(dtype=float) > 0.5
@@ -63,9 +75,16 @@ def design_matrix(art: dict, df: pd.DataFrame) -> np.ndarray:
 
 
 def probabilities(art: dict, df: pd.DataFrame) -> np.ndarray:
-    """Per-epoch class probabilities, columns ordered as art['states']."""
+    """How likely each sleep state is, for every epoch.
+
+    Returns one row per epoch and one column per state, in the order given by
+    `art["states"]`. Each row adds up to 1.
+    """
     X = design_matrix(art, df)
     logits = X @ np.asarray(art["coef"]).T + np.asarray(art["intercept"])
+    # Shift each row down by its largest value before exponentiating. This
+    # changes none of the resulting probabilities and keeps the numbers small
+    # enough that they cannot overflow.
     logits -= logits.max(axis=1, keepdims=True)
     p = np.exp(logits)
     p /= p.sum(axis=1, keepdims=True)
@@ -74,16 +93,25 @@ def probabilities(art: dict, df: pd.DataFrame) -> np.ndarray:
 
 
 def viterbi(log_em: np.ndarray, A: np.ndarray, log_pi: np.ndarray) -> np.ndarray:
-    """Maximum-likelihood state path."""
+    """Find the most likely run of states across the whole recording.
+
+    Instead of taking the best state for each epoch in isolation, this weighs
+    each epoch's own evidence against how often sleep really moves from one
+    state to another, and returns the sequence that fits both best. It is what
+    stops the scoring from flickering between states epoch by epoch.
+    """
     n, k = log_em.shape
     logA = np.log(np.clip(A, 1e-300, None))
     d = np.full((n, k), -np.inf)
     psi = np.zeros((n, k), dtype=int)
     d[0] = log_pi + log_em[0]
+    # Sweep forward, recording for each epoch the best way to arrive in each
+    # state, and which state it came from.
     for t in range(1, n):
         sc = d[t - 1][:, None] + logA
         psi[t] = np.argmax(sc, axis=0)
         d[t] = sc[psi[t], np.arange(k)] + log_em[t]
+    # Then sweep back from the best final state to read off the winning route.
     path = np.zeros(n, dtype=int)
     path[-1] = int(np.argmax(d[-1]))
     for t in range(n - 2, -1, -1):
@@ -92,48 +120,45 @@ def viterbi(log_em: np.ndarray, A: np.ndarray, log_pi: np.ndarray) -> np.ndarray
 
 
 def scale_transitions(A: np.ndarray, stickiness: float = 1.0) -> np.ndarray:
-    """Raise the transition matrix to a power and renormalize rows.
+    """Adjust how strongly the scoring resists changing state.
 
-    `stickiness` is a single knob for how hard the decode resists state changes,
-    because taking A**g multiplies every transition log-cost by g:
+    `stickiness` is a single dial:
 
-        g = 0    all transitions equally likely -> no temporal inertia at all,
-                 so the decode collapses to the per-epoch argmax (up to the
-                 state prior). Equivalent to turning smoothing off.
-        g = 1    the matrix as estimated from scored data (default).
-        g > 1    off-diagonal costs amplified -> longer, cleaner bouts, at the
-                 risk of swallowing genuine brief events (short REM bouts are
-                 the first casualty).
-        0<g<1    weaker inertia than the data suggests; more flicker.
+        0     ignore timing altogether; every epoch is scored on its own
+        1     use the transition rates measured from real scored data (default)
+        > 1   hold each state longer, giving fewer and longer bouts
+        < 1   switch more readily, giving more and shorter bouts
 
-    Rows are renormalized, so the result is always a valid transition matrix.
+    Turning it up produces a tidier hypnogram, but brief real events get
+    absorbed into their neighbours, and short REM bouts are the first to go.
+    Turn it down if fragmented sleep is part of what you are studying.
     """
     if stickiness < 0:
         raise ValueError("stickiness must be >= 0")
     A = np.asarray(A, dtype=float)
     out = np.power(np.clip(A, 1e-300, None), float(stickiness))
+    # Rescale each row to sum to 1, so the result is still a set of
+    # probabilities after the adjustment above.
     return out / out.sum(axis=1, keepdims=True)
 
 
 def predict(art: dict, df: pd.DataFrame, decode: bool = True,
             stickiness: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Score a featurized recording.
+    """Score a recording, returning one sleep state per epoch.
 
     Args:
-        art: artifact from load_model().
-        df: per-epoch feature table (rows must be in time order).
-        decode: apply the HMM/Viterbi temporal decode. False returns the raw
-            per-epoch (memoryless) argmax -- useful for seeing what the model
-            believes before any smoothing, and for diagnosing whether an error is
-            the classifier's or the decode's.
-        stickiness: resistance to state changes, see scale_transitions().
-            1.0 uses the transition matrix as estimated; 0 removes inertia
-            entirely; >1 enforces longer bouts.
+        art: a model from load_model().
+        df: the recording's feature table, rows in time order.
+        decode: smooth the states over time, which is the default. Turn it off
+            to see what the model makes of each epoch on its own -- useful for
+            telling whether a mistake came from the model or from the smoothing.
+        stickiness: how strongly to resist changing state, see
+            scale_transitions().
 
     Returns:
-        (labels, proba) -- labels is an array of state strings. `proba` is always
-        the raw per-epoch probability, unaffected by the decode, so callers can
-        display model confidence alongside a smoothed label.
+        (labels, proba). `labels` is the sleep state for each epoch. `proba` is
+        always the unsmoothed confidence for each epoch, so you can show how
+        sure the model was alongside the final answer.
     """
     p = probabilities(art, df)
     states = np.array(art["states"])
@@ -147,7 +172,11 @@ def predict(art: dict, df: pd.DataFrame, decode: bool = True,
 
 def to_scored_csv(labels: np.ndarray, t_start: np.ndarray,
                   epoch_sec: float = 4.0) -> pd.DataFrame:
-    """Convert predictions to the one-hot layout used by the Somnus scorer UI."""
+    """Put the scored states into the table layout the Somnus scorer reads.
+
+    There is one column per state and a 1 in whichever column applies to each
+    epoch, so the predictions can be opened in the scorer and corrected by hand.
+    """
     return pd.DataFrame({
         "Time_sec": t_start,
         "Wake": (labels == "Wake").astype(int),
@@ -158,6 +187,7 @@ def to_scored_csv(labels: np.ndarray, t_start: np.ndarray,
 
 
 def main() -> None:
+    """Score one recording from the command line."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--model", default=DEFAULT_ARTIFACT)
     ap.add_argument("--score", required=True,
@@ -175,8 +205,9 @@ def main() -> None:
                          "bouts")
     args = ap.parse_args()
 
-    # Featurizing pulls in mne and the dataset adapters; imported lazily so
-    # that using this module as a library stays light.
+    # Reading an EDF and computing features needs far more than this module
+    # does, so it is imported only here, where the command line actually needs
+    # it. Using somnus.predict from Python stays lightweight.
     from somnus.data import datasets as B
 
     art = load_model(args.model)
@@ -193,6 +224,7 @@ def main() -> None:
     print(f"Scored {name}: {len(df)} epochs")
     print("  predicted:", {s: int((labels == s).sum()) for s in art["states"]})
 
+    # If the recording came with manual scoring, say how far the two agree.
     if "state" in df.columns:
         m = df["state"].isin(art["states"]).to_numpy()
         if m.sum():
