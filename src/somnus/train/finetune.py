@@ -1,30 +1,20 @@
-"""Adapt the shipped model to your own recordings.
+"""Adapt the default model to your own dataset.
 
-The base model is a starting point, not the product. If your animals do not look
-like the ones it was trained on -- a disease model with fragmented or
-low-amplitude sleep -- this moves the model toward your data.
+The base logistic model is a starting point. If your animals do not look
+like the mice it was trained on -- if you're using a disease model with disrupted
+sleep -- this adjusts the logistic model toward your data.
 
-WHY NOT JUST RETRAIN
-Throwing your recordings in with the original training set and refitting would
-drown them: a few hundred epochs of an unusual phenotype against a far larger
-pile of normal sleep, and the result mostly relearns normal. Fine-tuning starts
-from the shipped model and moves it only as far as your data justifies.
-
-THE ONE KNOB
+YOU DECIDE:
 `lam` sets how tightly the new weights are held to the old ones:
 
     very large   keep the shipped model unchanged
     around 1     move partway toward your data
-    near 0       train on your data alone, ignoring the shipped model
+    near 0       train on your data alone, ignoring the default model weights
 
-So "adapt or retrain" is a dial rather than a decision, and its setting is
-chosen by testing on your own recordings instead of being asserted.
-
-WHAT CHANGES AND WHAT DOES NOT
-The model's weights are adapted, and optionally the transition rates, since
-disrupted sleep architecture is often the very thing being studied and those
-rates are only nine numbers. The feature scaling is left alone: it defines what
-the weights mean, and refitting it would quietly change every one of them.
+So "adapt or retrain" is a continuum and its setting is
+chosen by testing on your own recordings instead of being asserted. By adjusting
+this setting, you can build an accurate custom model with just a handful of 
+manual corrections in each sleep state.
 
 GUARDRAILS
 Any improvement is measured on recordings held back from the fitting, so the
