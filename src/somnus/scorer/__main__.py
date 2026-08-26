@@ -236,8 +236,8 @@ class SleepReviewState:
                   f"certainty threshold.")
             return
 
-        # Anchor on the CENTRE of the visible window, not its left edge. A jump
-        # centres the target, so current_time_sec ends up half a window *before*
+        # Anchor on the CENTER of the visible window, not its left edge. A jump
+        # centers the target, so current_time_sec ends up half a window *before*
         # it; searching from there would keep re-finding the same epoch whenever
         # low-certainty epochs are closer together than half a window (which they
         # usually are). Half an epoch of tolerance stops the epoch you are already
@@ -525,7 +525,7 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
     safe_h_freq = 200.0 if (sfreq / 2.0) > 200.0 else None
     
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)    
-    # [FIX] Force coordinates to 0, 40 to safely bypass the macOS top Menu Bar bug
+    # Force coordinates to 0, 40 to stay clear of the macOS menu bar
     cv2.moveWindow(WINDOW_NAME, 0, 40)
     cv2.setMouseCallback(WINDOW_NAME, on_mouse, param=state)
 

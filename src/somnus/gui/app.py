@@ -267,9 +267,9 @@ class MainWindow(QMainWindow):
              "velocity", "manual epochs"])
         hh = self.tbl.horizontalHeader()
         # Only the recording name stretches; the rest are fixed-ish. Long
-        # filenames are elided with the full path on hover. Without this the
-        # table's size hint grew with the longest filename and dragged the whole
-        # window wider than the screen, with no way to shrink it back.
+        # filenames are elided with the full path on hover, so the table's size
+        # hint cannot grow with the longest filename and drag the window wider
+        # than the screen.
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
         hh.setStretchLastSection(False)

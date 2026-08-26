@@ -10,15 +10,16 @@ for tiers a recording cannot support.
 
 WHY TIERS (measured, not assumed)
 ---------------------------------
-Bandwidth and mains contamination vary drastically across sources:
-  * A 5 kHz in-house rig: effective edge ~1700-2500 Hz. 60 Hz mains +3 to
-    +13 dB, plus a 120 Hz harmonic. No 50 Hz.
-  * Most labs in a public multi-lab corpus (128 Hz): edge ~64 Hz, with 50 Hz
-    mains up to +21 dB in some.
-  * One contributing lab: EEG lowpass-filtered with a corner near 25-26 Hz --
-    it tracks other labs to 25 Hz then falls off a cliff (-13 dB by 28 Hz).
-    Its EMG is NOT filtered (edge 64 Hz).
-So the only frequency range every source genuinely measures is <= 25 Hz.
+Bandwidth and mains contamination vary drastically between rigs. Measured
+examples, all of which the scorer has to handle:
+  * A 5 kHz rig: effective edge ~1700-2500 Hz, 60 Hz mains +3 to +13 dB with a
+    120 Hz harmonic, no 50 Hz.
+  * A 128 Hz recording: edge ~64 Hz, 50 Hz mains up to +21 dB.
+  * A recording whose EEG was lowpass-filtered near 25-26 Hz: it tracks an
+    unfiltered one up to 25 Hz, then falls off a cliff (-13 dB by 28 Hz). Its
+    EMG is NOT filtered (edge 64 Hz), so EEG and EMG bandwidth must be measured
+    separately.
+The only frequency range every source genuinely measures is therefore <= 25 Hz.
 
 TIERS
   1  <= 25 Hz   delta .5-4, theta 5-10, alpha 10-15, beta 15-25   (universal)
@@ -125,9 +126,9 @@ def detect_bandwidth(signal: np.ndarray, sfreq: float,
     """Effective upper edge (Hz) of genuine signal, i.e. the filter corner.
 
     EEG power falls with frequency even with no filter (1/f), so a fixed dB
-    threshold would mistake natural decay for filtering: an unfiltered
-    recording can sit ~-18 dB at 63 Hz and still be entirely real. What distinguishes an anti-alias/lowpass filter
-    is a sudden *change of slope* -- a cliff.
+    threshold would mistake natural decay for filtering: an unfiltered recording
+    can sit ~-18 dB at 63 Hz and still be entirely real. What distinguishes an
+    anti-alias/lowpass filter is a sudden *change of slope* -- a cliff.
 
     Detection: smooth the mains-suppressed spectrum, then scan upward from
     `start_hz` for the first frequency where the local slope is steeper than

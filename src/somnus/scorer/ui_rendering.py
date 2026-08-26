@@ -57,20 +57,18 @@ RENDER_CACHE = {
 def perform_resize(win_name, img_w, img_h):
     cv2.resizeWindow(win_name, img_w, img_h)
     cv2.waitKey(1)
-    # [FIX] Shift Y coordinate down 40px to adhere safely below macOS top menu
+    # Shift Y down 40 px to stay clear of the macOS menu bar
     cv2.moveWindow(win_name, 0, 40)
     cv2.waitKey(1)
 
 def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
     """Model belief for the epochs currently on screen.
 
-    Replaces the old spectral-index panel (Delta Idx / Log(T/D) / Abs. EMG):
-    those numbers duplicated what the model already consumes, whereas the useful
-    thing while relabeling is what the model *thinks* and how sure it is.
-
     Shows the mean probability of each state over the visible window, the mean
-    confidence, and how many visible epochs fall below the certainty threshold.
-    Falls back to a hint when the viewer was opened without model metadata.
+    confidence, and how many visible epochs fall below the certainty threshold --
+    what the model thinks, and how sure it is, which is what you need while
+    relabeling. Falls back to a hint when the viewer was opened without model
+    metadata.
     """
     img = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.rectangle(img, (0, 0), (w, h), (20, 20, 20), -1)
@@ -288,9 +286,8 @@ def draw_sidebar(state, h, w_side):
     cv2.line(img, (10, 35), (w_side-10, 35), (100, 100, 100), 1)
     cv2.putText(img, "Click below to Jump:", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
     
-    # Only the three scored states get jump buttons. Artifact / Unclear /
-    # Unknown were dropped: they are brushes, not states you navigate between,
-    # and the freed rows are needed for the model-review controls below.
+    # Only the three scored states get jump buttons: Artifact / Unclear /
+    # Unknown are brushes, not states you navigate between.
     valid_labels = NAV_LABELS
 
     for idx, label in enumerate(valid_labels):

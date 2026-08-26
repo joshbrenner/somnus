@@ -44,6 +44,42 @@ labels, proba = predict(art, df)        # per-epoch states + probabilities
 smoothing, `1` uses the transition matrix as estimated, `>1` enforces longer
 bouts.
 
+## Video tracking (optional)
+
+If a recording has video with the animal's position tracked, Somnus adds a
+locomotion feature. Pass the tracking file as `"pkl"` in the `featurize()`
+entry, or put it beside the EDF and the GUI will find it.
+
+One row per video frame, in frame order. Accepted formats:
+
+| File | Contents |
+|---|---|
+| `.csv` | A DeepLabCut export, or any table with `x` and `y` columns |
+| `.h5` | A DeepLabCut export (needs `pip install tables`) |
+| `.pkl` | An `(n_frames, 2)` array of x/y, or a dict with a `coordinates` key |
+
+A DeepLabCut file usually tracks many bodyparts. Somnus uses the one named
+**`mouse_center`**; if the file tracks exactly one bodypart, it uses that.
+Otherwise it stops rather than guess which point represents the animal — export
+a `mouse_center` bodypart, or hand it a plain two-column `x,y` table instead.
+DeepLabCut's `_full.pickle` is its raw pre-assembly output, not a coordinate
+table; use the `.csv` or `.h5` written alongside it.
+
+**Filter low-confidence points yourself.** Somnus does not drop them, so a badly
+tracked frame reads as real movement. Replace rejected points with `NaN` before
+passing the file in — frames that are not finite are skipped when speed is
+computed.
+
+**Frame times are required, never assumed.** Somnus looks for a
+`*_timestamps.npy` beside the tracking file with exactly one timestamp per row.
+Cameras drop frames, so assuming a constant frame rate can misplace positions by
+minutes; if no timestamps file matches the row count, Somnus raises rather than
+guess. To score without locomotion, simply do not pass a tracking file.
+
+Note the timestamps must belong to the video the coordinates were tracked on. If
+you tracked a re-encoded or cropped copy, it has its own frame count and needs
+its own timestamps.
+
 ## The desktop application
 
 ```bash

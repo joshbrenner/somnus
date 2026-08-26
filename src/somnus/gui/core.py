@@ -58,8 +58,9 @@ class Recording:
     def has_velocity(self) -> bool:
         """Velocity needs positions AND trustworthy frame times.
 
-        Cameras dropped frames, so assuming a constant fps misplaces positions by
-        minutes. Without timestamps the feature is withheld rather than guessed.
+        Cameras can drop frames, so assuming a constant fps misplaces positions
+        by minutes. Without timestamps the feature is withheld rather than
+        guessed.
         """
         return bool(self.coords) and bool(self.timestamps)
 
@@ -124,8 +125,8 @@ def discover_recordings(folder: str) -> list[Recording]:
     """Find EDFs in a folder and pair them with sibling label/tracking/video files.
 
     Purely descriptive: nothing is opened for writing, nothing is copied. Matching
-    is by filename prefix because the camera/tracker append their own suffixes
-    (`..._Camera_video4_coordinates.pkl`, `..._cropped_ds.mp4`, and so on).
+    is by filename prefix, so a recording's video and tracking files are found
+    whatever suffix the camera or tracker appends to the EDF's base name.
     """
     import glob as _glob
     out = []
@@ -149,11 +150,18 @@ def discover_recordings(folder: str) -> list[Recording]:
                     scored = cand
                     break
 
-            coords = first(base + "*coordinates.pkl")
+            # Tracking: the `*coordinates.pkl` convention first, then a
+            # DeepLabCut export. Only files named as DLC writes them are
+            # considered, so a sibling `_scored.csv` is never mistaken for
+            # tracking. DLC's `_full.pickle` is its pre-assembly dump, not a
+            # coordinate table, so it is excluded.
+            coords = (first(base + "*coordinates.pkl")
+                      or first(base + "*DLC*.h5")
+                      or first(base + "*DLC*.csv", exclude=("_full", "_meta")))
             # Timestamps are looked for ONLY in the folder the user pointed at.
             # Deliberately no widened/recursive search: picking up a stale or
             # mismatched timestamps file from elsewhere would pair positions with
-            # the wrong times, and because the cameras dropped frames that
+            # the wrong times, and where frames have been dropped that
             # misaligns tracking from the EEG by minutes -- silently. Reporting
             # "not found" is the safe failure, so velocity is withheld instead.
             ts = first(base + "*timestamps.npy")
@@ -310,7 +318,7 @@ class LabelStore:
         # Build the replacement as its own frame and concat. Do NOT use
         # `self.df.loc[len(self.df)] = ...` after filtering: the surviving index
         # is non-contiguous, so that positional guess silently OVERWRITES an
-        # existing row (it deleted one epoch per call).
+        # existing row.
         keep = self.df[self.df["epoch"] != epoch]
         new = pd.DataFrame([[epoch, t, state, src, conf, model, mstate, _now()]],
                            columns=LABEL_COLS)
@@ -350,10 +358,7 @@ class LabelStore:
 
 # --------------------------------------------------------------------- scoring
 def featurize(recording: Recording, cache: str | None = None) -> pd.DataFrame:
-    """Feature table for one recording, cached under the project.
-
-    Uses the same adapters as training so columns and units match the model.
-    """
+    """Feature table for one recording, cached under the project."""
     if cache and os.path.exists(cache):
         return pd.read_csv(cache)
     from somnus.data import datasets as B
@@ -385,7 +390,7 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
         epoch is genuinely ambiguous to the model.
       * decode override -- the smoothed label disagrees with the raw per-epoch
         argmax, i.e. the HMM overruled the evidence. These are exactly where
-        smoothing may have erased a real short bout, so they deserve a manual
+        smoothing may have erased a real short bout, so they are worth checking
         even when the model looks confident.
     """
     p = np.sort(proba, axis=1)
@@ -444,8 +449,7 @@ def archive_scoring(project: "Project", recording: Recording,
     os.makedirs(hist, exist_ok=True)
     stamp = _now().replace(":", "").replace("-", "").replace("+0000", "")
     # Timestamps are second-resolution, so two saves within the same second would
-    # collide; walk a counter until the name is free rather than assuming at most
-    # one clash (which silently dropped snapshots).
+    # collide; walk a counter until the name is free.
     dest = os.path.join(hist, f"{recording.name}_scored_{stamp}.csv")
     k = 1
     while os.path.exists(dest):

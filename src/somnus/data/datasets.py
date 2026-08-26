@@ -91,14 +91,106 @@ class _SafeUnpickler(pickle.Unpickler):
                                    "__setstate__": lambda s, st: None})
 
 
+CENTROID_BODYPART = "mouse_center"
+
+
+def _xy_from_table(df: pd.DataFrame, path: str) -> np.ndarray:
+    """(n_frames, 2) centroid from a tracking table.
+
+    Handles a DeepLabCut export (a `scorer`/`bodyparts`/`coords` column
+    MultiIndex) and a plain table with `x` and `y` columns.
+    """
+    if isinstance(df.columns, pd.MultiIndex):
+        names = list(df.columns.names)
+        lvl = names.index("bodyparts") if "bodyparts" in names else -2
+        parts = list(dict.fromkeys(df.columns.get_level_values(lvl)))
+        if CENTROID_BODYPART in parts:
+            want = CENTROID_BODYPART
+        elif len(parts) == 1:
+            want = parts[0]
+        else:
+            raise ValueError(
+                f"{os.path.basename(path)} tracks {len(parts)} bodyparts and "
+                f"none is called {CENTROID_BODYPART!r}, so there is no single "
+                f"point to measure movement from. Either export a "
+                f"{CENTROID_BODYPART!r} bodypart, or supply a table with one "
+                f"x/y pair per frame. Found: {', '.join(map(str, parts))}")
+        sub = df.xs(want, axis=1, level=lvl)
+        cols = {str(c).lower(): c for c in sub.columns.get_level_values(-1)}
+        sub.columns = sub.columns.get_level_values(-1)
+        if "x" not in cols or "y" not in cols:
+            raise ValueError(f"{os.path.basename(path)}: bodypart {want!r} has "
+                             f"no x/y columns")
+        return sub[[cols["x"], cols["y"]]].to_numpy(dtype=float)
+
+    cols = {str(c).lower(): c for c in df.columns}
+    if "x" in cols and "y" in cols:
+        return df[[cols["x"], cols["y"]]].to_numpy(dtype=float)
+    if df.shape[1] == 2:
+        return df.to_numpy(dtype=float)
+    raise ValueError(
+        f"{os.path.basename(path)}: could not find the centroid. Supply either "
+        f"columns named 'x' and 'y' (any other columns are ignored) or a table "
+        f"with exactly two columns, x then y. Found: "
+        f"{', '.join(map(str, df.columns))}")
+
+
 def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
-    """MouseFinder pickle; handles dict and bare-array layouts."""
+    """Per-frame position of the animal, as (n_frames, 2) x/y and metadata.
+
+    One row per video frame, in frame order. Accepted formats:
+
+    * ``.csv`` -- a DeepLabCut export, or any table with `x` and `y` columns.
+    * ``.h5`` / ``.hdf5`` -- a DeepLabCut export (needs the `tables` package).
+    * ``.pkl`` / ``.pickle`` -- an (n, 2) array of x/y, or a dict with a
+      `coordinates` key holding one; anything else in the dict is returned as
+      metadata.
+
+    A DeepLabCut file usually tracks many bodyparts. The one named
+    ``mouse_center`` is used; if the file has exactly one bodypart that is used
+    instead. Otherwise this raises, rather than guessing which point represents
+    the animal.
+
+    Low-likelihood points are NOT filtered here -- a poorly tracked frame is
+    kept as-is and will read as real movement. Filter before passing the file
+    in, replacing rejected points with NaN (velocity ignores non-finite steps).
+    """
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext in (".csv", ".h5", ".hdf5"):
+        if ext == ".csv":
+            with open(path) as fh:
+                first = fh.readline().split(",", 1)[0].strip().lower()
+            # a DeepLabCut export starts its header block with "scorer"
+            hdr = [0, 1, 2] if first == "scorer" else [0]
+            df = pd.read_csv(path, header=hdr, index_col=0 if hdr != [0] else None)
+        else:
+            try:
+                df = pd.read_hdf(path)
+            except ImportError as e:
+                raise ImportError(
+                    f"Reading a DeepLabCut .h5 needs the `tables` package "
+                    f"(pip install tables). Alternatively point Somnus at the "
+                    f"matching .csv export.") from e
+        return _xy_from_table(df, path), {}
+
     _pathlib_shim()
     with open(path, "rb") as fh:
         obj = _SafeUnpickler(fh).load()
+
     if isinstance(obj, dict):
-        return (np.asarray(obj["coordinates"], float),
-                {k: v for k, v in obj.items() if k != "coordinates"})
+        if "coordinates" in obj:
+            return (np.asarray(obj["coordinates"], float),
+                    {k: v for k, v in obj.items() if k != "coordinates"})
+        if any(str(k).startswith("frame") for k in obj):
+            raise ValueError(
+                f"{os.path.basename(path)} looks like a DeepLabCut "
+                f"'_full.pickle': raw per-frame detections, before they are "
+                f"assembled into tracks. Use the .h5 or .csv export written "
+                f"alongside it instead.")
+        raise ValueError(f"{os.path.basename(path)}: pickled dict has no "
+                         f"'coordinates' key. Keys: "
+                         f"{', '.join(map(str, list(obj)[:8]))}")
     return np.asarray(obj, float), {}
 
 
@@ -106,9 +198,9 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
                         meta: dict, search_dir: str) -> tuple[np.ndarray, str]:
     """True per-frame times for a coordinate array. Raises if unavailable.
 
-    Frames were dropped during acquisition, so timing is irregular; assuming a
-    constant fps misplaces frames by minutes. A timestamp file is only accepted
-    if its length matches the coordinate array EXACTLY, or if the tracking
+    Frames can be dropped during acquisition, making timing irregular; assuming a
+    constant fps then misplaces frames by minutes. A timestamp file is accepted
+    only if its length matches the coordinate array EXACTLY, or if the tracking
     metadata declares a constant rate consistent with the recording duration
     (the `*_cropped_ds` re-encodes).
 
@@ -239,7 +331,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
     df = H.add_temporal_context(df, base_cols, windows=CONTEXT_WINDOWS)
 
     # Within-recording z-scoring. Applied to amplitude AND ratio features: both
-    # were measured to carry large per-site offsets, and z-scoring is computed
+    # carry large per-site offsets, and z-scoring is computed
     # here on the recording's FULL epoch set (before any sampling) so the
     # statistics reflect the recording's natural state mix.
     df = H.zscore_within(df, H.zscore_target_columns(df), group_col="recording")

@@ -330,7 +330,7 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
 
 def forgetting_check(art_base: dict, art_new: dict, base_csv: str,
                      verbose: bool = True) -> dict | None:
-    """Score the base training matrix with both models to expose drift.
+    """Score a reference feature table with both models to expose drift.
 
     A fine-tune that helps the user's phenotype but destroys general performance
     should be visible, not silent.

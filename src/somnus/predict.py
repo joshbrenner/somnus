@@ -1,8 +1,8 @@
-"""Standalone scorer for the released Somnus model -- numpy/pandas only.
+"""Scorer for the Somnus model: JSON artifact + feature table -> states.
 
-Given the JSON artifact and a featurized epoch table it reproduces the
-published predictions, with no dependency on sklearn or on how the model was
-fitted. This is the module the GUI and any batch-scoring tool should call.
+Applies the logistic model to a per-epoch feature table and runs the HMM/Viterbi
+temporal decode, returning one state per epoch. This is the module the GUI and
+any batch-scoring tool should call.
 
 The feature table must be produced by `somnus.data.datasets.featurize()`, so
 that column names and units match the artifact.
@@ -43,12 +43,11 @@ def load_model(path: str | None = None) -> dict:
 
 
 def design_matrix(art: dict, df: pd.DataFrame) -> np.ndarray:
-    """Centre/scale each feature where it is available, zero where it is not.
+    """Center/scale each feature where it is available, zero where it is not.
 
-    Mirrors the training-time AvailabilityScaler: a feature that is absent (or
-    non-finite, or whose guard column says its tier was unavailable in this
-    recording) is set to exactly 0 *after* centering, so it contributes nothing
-    to the logit rather than biasing it.
+    A feature that is absent (or non-finite, or whose guard column says its tier
+    was unavailable in this recording) is set to exactly 0 *after* centering, so
+    it contributes nothing to the logit rather than biasing it.
     """
     cols = art["columns"]
     X = np.zeros((len(df), len(cols)), dtype=float)
@@ -77,7 +76,7 @@ def probabilities(art: dict, df: pd.DataFrame) -> np.ndarray:
 
 
 def viterbi(log_em: np.ndarray, A: np.ndarray, log_pi: np.ndarray) -> np.ndarray:
-    """Maximum-likelihood state path (same implementation as training)."""
+    """Maximum-likelihood state path."""
     n, k = log_em.shape
     logA = np.log(np.clip(A, 1e-300, None))
     d = np.full((n, k), -np.inf)
@@ -178,8 +177,8 @@ def main() -> None:
                          "bouts")
     args = ap.parse_args()
 
-    # Featurizing needs the dataset adapters; import lazily so that library
-    # use of this module stays dependency-light (numpy/pandas only).
+    # Featurizing pulls in mne and the dataset adapters; imported lazily so
+    # that using this module as a library stays light.
     from somnus.data import datasets as B
 
     art = load_model(args.model)
