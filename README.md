@@ -70,7 +70,7 @@ passing the file.
 **Frame times are strongly suggested.** Somnus looks for a
 `*_timestamps.npy` beside the tracking file with exactly one timestamp per row.
 Cameras drop frames, so assuming a constant frame rate can misplace positions by
-minutes; if no timestamps file matches the row count, Somnus requires confirmation.
+minutes; if no timestamps file is found, Somnus requires confirmation.
 
 ## The desktop application
 
