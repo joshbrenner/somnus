@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import filedialog
 
 from somnus.scorer.video_handler import VideoHandler
-from somnus.scorer.ui_rendering import render_composite, WINDOW_NAME, perform_resize, COLORS, MENU_HEADERS, MENU_ITEMS
+from somnus.scorer.ui_rendering import render_composite, WINDOW_NAME, MENU_HEADERS, MENU_ITEMS
 from somnus.scorer.signal_utils import compute_psd
 
 def find_associated_video(edf_path):
@@ -152,13 +152,6 @@ class SleepReviewState:
             return None
         i = int(t_sec // self.epoch_sec)
         return i if 0 <= i < len(self.review_meta) else None
-
-    def epoch_review_at(self, t_sec):
-        """What the model thought of the epoch at this point in the recording."""
-        i = self._epoch_of(t_sec)
-        if i is None:
-            return None, None, None
-        return float(self._conf[i]), float(self._unc[i]), bool(self._sm[i])
 
     def _low_mask(self):
         """Which epochs the 'Next low certainty' button will visit.
@@ -489,7 +482,7 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
 
     num_eeg = 3
     if len(ch_names) != 4:
-        print(f"\nNotice: Found {len(ch_names)} channels in the EDF (expected 4).")
+        print(f"\nFound {len(ch_names)} channels in this recording.")
         for i, ch in enumerate(ch_names):
             print(f"[{i+1}] {ch}")
             

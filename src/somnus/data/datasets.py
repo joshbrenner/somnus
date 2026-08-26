@@ -403,26 +403,3 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     }
     return df
 
-
-def model_columns(df: pd.DataFrame, zscored: bool = False) -> list[str]:
-    """The feature columns the model actually reads.
-
-    `zscored=True` selects the versions rescaled against their own recording,
-    which is what the released model uses.
-    """
-    base = list(UNIVERSAL)
-    for cols, _ in OPTIONAL.values():
-        base += cols
-    if zscored:
-        base = [c if c.endswith("_z") else f"{c}_z" for c in base]
-    ctx = []
-    for c in base:
-        root = c[:-2] if c.endswith("_z") else c
-        suf = "_z" if c.endswith("_z") else ""
-        for w in CONTEXT_WINDOWS:
-            ctx += [f"{root}_mean{w}{suf}", f"{root}_std{w}{suf}"]
-    inds = [ind for _, ind in OPTIONAL.values()]
-    wanted = base + ctx + inds
-    return [c for c in wanted if c in df.columns]
-
-

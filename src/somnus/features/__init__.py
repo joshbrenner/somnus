@@ -27,8 +27,7 @@ import pandas as pd
 from openseize.spectra.estimators import psd as _os_psd
 
 
-def _welch(x: np.ndarray, sfreq: float, nperseg: int,
-           axis: int = -1) -> tuple[np.ndarray, np.ndarray]:
+def _welch(x: np.ndarray, sfreq: float, nperseg: int) -> tuple[np.ndarray, np.ndarray]:
     """Measure how much power the signal carries at each frequency.
 
     Takes one stretch of signal, or a stack of them (one row per epoch), and
@@ -391,12 +390,6 @@ def zscore_within(df: pd.DataFrame, columns: list[str],
     for c in cols:
         out[f"{c}{suffix}"] = (df[c] - mu[c]) / sd[c]
     return out
-
-
-def amplitude_columns(df: pd.DataFrame) -> list[str]:
-    """The features whose absolute size depends on the equipment used."""
-    return [c for c in df.columns
-            if any(c == a or c.startswith(a + "_") for a in AMPLITUDE_FEATURES)]
 
 
 def zscore_target_columns(df: pd.DataFrame) -> list[str]:

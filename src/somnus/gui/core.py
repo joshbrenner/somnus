@@ -461,18 +461,6 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
     return np.clip(u, 0.0, 1.0)
 
 
-def review_queue(proba: np.ndarray, labels: np.ndarray, raw: np.ndarray,
-                 manual: np.ndarray | None = None,
-                 top: int | None = None) -> np.ndarray:
-    """Epochs worth reviewing, most doubtful first, skipping ones already seen."""
-    u = uncertainty(proba, labels, raw)
-    if manual is not None:
-        u = np.where(manual, -1.0, u)
-    order = np.argsort(-u)
-    order = order[u[order] >= 0]
-    return order if top is None else order[:top]
-
-
 # ----------------------------------------------------- hand-off to the scorer UI
 def smooth_trace(x: np.ndarray, window: int = 15) -> np.ndarray:
     """Smooth a trace so it can actually be read on screen.
@@ -523,14 +511,6 @@ def archive_scoring(project: "Project", recording: Recording,
         except OSError:
             pass
     return dest
-
-
-def scoring_versions(project: "Project", recording: Recording) -> list[str]:
-    """Earlier copies of this recording's scoring, oldest first."""
-    import glob as _glob
-    hist = os.path.join(project.labels_dir, "history")
-    return sorted(_glob.glob(os.path.join(hist,
-                                          f"{recording.name}_scored_*.csv")))
 
 
 def write_viewer_bundle(project: "Project", recording: Recording,

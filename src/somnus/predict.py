@@ -170,8 +170,7 @@ def predict(art: dict, df: pd.DataFrame, decode: bool = True,
     return states[path], p
 
 
-def to_scored_csv(labels: np.ndarray, t_start: np.ndarray,
-                  epoch_sec: float = 4.0) -> pd.DataFrame:
+def to_scored_csv(labels: np.ndarray, t_start: np.ndarray) -> pd.DataFrame:
     """Put the scored states into the table layout the Somnus scorer reads.
 
     There is one column per state and a 1 in whichever column applies to each
@@ -230,8 +229,8 @@ def main() -> None:
                   f"agreement = {agree:.4f}")
 
     if args.out:
-        to_scored_csv(labels, df["t_start"].to_numpy(),
-                      art["epoch_sec"]).to_csv(args.out, index=False)
+        to_scored_csv(labels, df["t_start"].to_numpy()).to_csv(
+            args.out, index=False)
         print(f"  wrote {args.out}")
 
 

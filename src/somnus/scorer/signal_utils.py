@@ -14,26 +14,6 @@ def compute_psd(data, sfreq, fmin=0, fmax=200):
     idx = np.where((freqs >= fmin) & (freqs <= fmax))
     return freqs[idx], 10 * np.log10(avg_psd[idx] + 1e-12)
 
-def get_band_power(data_snippet, sfreq, target_freq, bandwidth=2.0):
-    """Peak power in a narrow band around one frequency, in decibels."""
-    if len(data_snippet) < int(sfreq * 0.1): return -100.0 
-    
-    nperseg = len(data_snippet)
-    target_res = 0.2
-    nfft = int(sfreq / target_res)
-    nfft = max(nfft, nperseg)
-
-    freqs, psd = welch(data_snippet, fs=sfreq, nperseg=nperseg, nfft=nfft)
-    
-    f_min = max(0, target_freq - bandwidth/2)
-    f_max = target_freq + bandwidth/2
-    idx = np.where((freqs >= f_min) & (freqs <= f_max))
-    
-    if len(idx[0]) == 0: return -100.0
-    
-    peak_power = np.max(psd[idx])
-    return 10 * np.log10(peak_power + 1e-12)
-
 def get_nice_number(val, round_up=False):
     """Round a value to a neat 1, 2 or 5 so axis labels read well."""
     if val == 0: return 1

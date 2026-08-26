@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from somnus.scorer.signal_utils import compute_psd, get_nice_number
+from somnus.scorer.signal_utils import get_nice_number
 
 WINDOW_NAME = "Sleep Scorer Validator"
 
@@ -52,14 +50,6 @@ RENDER_CACHE = {
     'side_img': None,
     'total_h': 0
 }
-
-def perform_resize(win_name, img_w, img_h):
-    """Resize the scorer window and move it clear of the macOS menu bar."""
-    cv2.resizeWindow(win_name, img_w, img_h)
-    cv2.waitKey(1)
-    # Shift Y down 40 px to stay clear of the macOS menu bar
-    cv2.moveWindow(win_name, 0, 40)
-    cv2.waitKey(1)
 
 def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
     """Draw what the model believes about the stretch on screen.
