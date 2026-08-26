@@ -62,23 +62,15 @@ A DeepLabCut file usually tracks many bodyparts. Somnus uses the one named
 **`mouse_center`**; if the file tracks exactly one bodypart, it uses that.
 Otherwise it stops rather than guess which point represents the animal — export
 a `mouse_center` bodypart, or hand it a plain two-column `x,y` table instead.
-DeepLabCut's `_full.pickle` is its raw pre-assembly output, not a coordinate
-table; use the `.csv` or `.h5` written alongside it.
 
 **Filter low-confidence points yourself.** Somnus does not drop them, so a badly
 tracked frame reads as real movement. Replace rejected points with `NaN` before
-passing the file in — frames that are not finite are skipped when speed is
-computed.
+passing the file.
 
-**Frame times are required, never assumed.** Somnus looks for a
+**Frame times are strongly suggested.** Somnus looks for a
 `*_timestamps.npy` beside the tracking file with exactly one timestamp per row.
 Cameras drop frames, so assuming a constant frame rate can misplace positions by
-minutes; if no timestamps file matches the row count, Somnus raises rather than
-guess. To score without locomotion, simply do not pass a tracking file.
-
-Note the timestamps must belong to the video the coordinates were tracked on. If
-you tracked a re-encoded or cropped copy, it has its own frame count and needs
-its own timestamps.
+minutes; if no timestamps file matches the row count, Somnus requires confirmation.
 
 ## The desktop application
 
