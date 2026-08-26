@@ -15,11 +15,10 @@ The design goal is not maximum accuracy on one rig. It is a system that **runs
 on whatever data you have**, and that can be readily adapted to disease models
 with degraded sleep architecture where heavier commercial scorers may fail altogether.
 
-Features are computed in frequency tiers gated by each recording's *measured* bandwidth. 
+Features are computed in frequency tiers gated by each recording's measured bandwidth. 
 Every feature is then z-scored within its own recording. The temporal structure of sleep comes from an 
 HMM/Viterbi model with a "transition resistance" knob which allows you to adjust the 
-frequency of state transitions. Hence, a single logistic model scores both a 128 Hz EEG-only 
-recording and a 5 kHz EEG+EMG+labeled video recording.
+frequency of state transitions. 
 
 ## Install
 
@@ -58,7 +57,7 @@ pre-loaded with the model's labels, so you correct rather than score from
 scratch) → **Fine-tune** (adapt the model to your corrections) → **Evaluate**
 (compare against the base model; export sleep-architecture statistics).
 
-Two invariants are enforced: **source data is never written to**, and
+Two notes: **source data is never written to**, and
 **the model never trains on its own output** — every epoch records where its
 label came from, and only human-sourced labels can become training targets.
 
