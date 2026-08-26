@@ -118,7 +118,7 @@ class SleepReviewState:
 
     # ------------------------------------------------------ model review extras
     def _load_review_meta(self, path):
-        """Load per-epoch uncertainty / HMM flags, if the GUI supplied them."""
+        """Read how sure the model was about each epoch, if the app supplied it."""
         if not path or not os.path.exists(path):
             return
         try:
@@ -154,31 +154,32 @@ class SleepReviewState:
         return i if 0 <= i < len(self.review_meta) else None
 
     def epoch_review_at(self, t_sec):
-        """(confidence, uncertainty, hmm_smoothed) for the epoch at t_sec."""
+        """What the model thought of the epoch at this point in the recording."""
         i = self._epoch_of(t_sec)
         if i is None:
             return None, None, None
         return float(self._conf[i]), float(self._unc[i]), bool(self._sm[i])
 
     def _low_mask(self):
-        """Epochs eligible for the 'Next low certainty' jump.
+        """Which epochs the 'Next low certainty' button will visit.
 
-        Confidence below the user's threshold, excluding HMM-smoothed epochs:
-        the smoothing changing a label is not the model being unsure, and those
-        are already flagged by their own color in the timeline.
+        Epochs the model was unsure about. Ones the smoothing changed are left
+        out -- that is not the same as the model being unsure, and they already
+        have their own colour in the timeline.
         """
         return (self._conf < self.certainty_threshold) & ~self._sm
 
     def n_low_certainty(self):
-        """Count matching the button's own criteria, so the two never disagree."""
+        """How many epochs the button would visit, counted the way it picks them."""
         if self.review_meta is None:
             return 0
         return int(self._low_mask().sum())
 
     def window_belief(self, t0, t1):
-        """(mean per-state probability, mean confidence, n_below_thr, n_visible).
+        """What the model believes about the stretch currently on screen.
 
-        Averaged over the epochs overlapping [t0, t1) -- i.e. what is on screen.
+        Averages each state's probability over the visible epochs, and counts
+        how many of them fall below the certainty threshold.
         """
         if self.review_meta is None:
             return {}, 0.0, 0, 0
@@ -212,7 +213,7 @@ class SleepReviewState:
               f"({self.n_low_certainty()} epochs below)")
 
     def smoothed_spans(self, t0, t1):
-        """[(start_sec, end_sec)] of HMM-smoothed epochs overlapping [t0, t1)."""
+        """Which stretches on screen had their label changed by the smoothing."""
         if self.review_meta is None:
             return []
         lo = max(0, int(t0 // self.epoch_sec))
@@ -221,16 +222,17 @@ class SleepReviewState:
                 for i in range(lo, hi) if self._sm[i]]
 
     def mark_reviewed(self, t_sec):
-        """Note that the user has looked here, so it stops being queued."""
+        """Remember that the user has visited this epoch, so it stops coming up."""
         i = self._epoch_of(t_sec)
         if i is not None:
             self._reviewed[i] = True
 
     def jump_to_next_uncertain(self, direction=1):
-        """Next low-certainty epoch, walking forward in TIME.
+        """Jump to the next epoch the model was unsure about.
 
-        Temporal order rather than most-uncertain-first, so review follows the
-        recording the way scoring does. Wraps around at the end.
+        Moves forward through the recording in time rather than jumping to the
+        single worst epoch, so reviewing follows the recording the way scoring
+        does. Wraps round at the end.
         """
         if self.review_meta is None:
             print("No model review metadata loaded.")
@@ -306,7 +308,10 @@ class SleepReviewState:
             print(f"No future {target_state} bouts found.")
 
     def jump_to_adjacent_epoch(self, direction='next'):
-        """Step to the next or previous epoch boundary."""
+        """Step to the next or previous bout boundary.
+
+        Despite the name, this moves between bouts, not epochs.
+        """
         exact_time = self.current_time_sec + self.playback_offset_sec
         current_bout_mask = self.bouts['Start_Time'] <= exact_time
         

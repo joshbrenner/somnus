@@ -1,12 +1,15 @@
-"""Somnus GUI -- tabbed desktop app for scoring, reviewing and fine-tuning.
+"""The Somnus desktop app.
+
+Five tabs, taken in order:
 
     Project  ->  Score  ->  Review & Relabel  ->  Fine-tune  ->  Evaluate
 
-Layout follows DeepLabCut's tabbed workflow. All heavy work (featurizing,
-scoring, fine-tuning) runs on a worker thread so the window stays responsive.
+Point it at a folder of recordings, score them, correct what the model got
+wrong, adapt the model to your corrections, then compare the two.
 
-Nothing is ever written outside the project directory; source recordings are
-opened read-only.
+Anything slow runs off the main thread, so the window stays responsive. Nothing
+is ever written outside the project folder; your recordings are opened for
+reading only.
 
 Run:
     somnus-gui            (or: python -m somnus.gui)
@@ -43,7 +46,7 @@ STATE_Y = {"Wake": 2, "NREM": 1, "REM": 0}
 
 # ----------------------------------------------------------------- worker glue
 class Worker(QObject):
-    """Runs one callable off the GUI thread and reports back."""
+    """Runs one slow job away from the window, reporting progress as it goes."""
     progress = Signal(str)
     finished = Signal(object)
     failed = Signal(str)
@@ -62,7 +65,7 @@ class Worker(QObject):
 
 
 class TaskRunner:
-    """Keeps a QThread + Worker alive for the duration of one task."""
+    """Holds a background job alive until it finishes, and only one at a time."""
 
     def __init__(self, parent):
         self.parent = parent
@@ -161,11 +164,10 @@ class FrameTimesDialog(QDialog):
 
 # ------------------------------------------------------------------- hypnogram
 class HypnogramCanvas(FigureCanvas):
-    """Whole-recording state ribbon + confidence trace, click to seek.
+    """The whole recording at a glance: a state ribbon over a confidence trace.
 
-    The x axis is elapsed time (hours), not epoch index -- epoch numbers are an
-    implementation detail, whereas time is what you compare against the video and
-    the light cycle. Clicks are converted back to an epoch index for the caller.
+    Time runs along the bottom in hours, so it lines up with the video and the
+    light cycle. Clicking anywhere jumps to that point.
     """
     seeked = Signal(int)
 
@@ -191,15 +193,13 @@ class HypnogramCanvas(FigureCanvas):
 
     def draw_hypnogram(self, labels, confidence=None, manual=None,
                        threshold=None, conf_raw=None, eligible=None):
-        """Draw the ribbon and the confidence panel.
+        """Draw the state ribbon and the confidence panel beneath it.
 
-        `confidence` is the smoothed trace (legibility); `conf_raw` is the
-        unsmoothed per-epoch confidence the threshold actually applies to. Both
-        are shown, because a threshold line drawn only against a smoothed trace
-        would imply the wrong set of epochs -- smoothing lifts isolated dips above
-        the line. `eligible` marks the epochs the scorer's jump will actually
-        visit, so the answer to "what gets included" is shown directly rather
-        than inferred from where a line crosses a curve.
+        Both the smoothed and the raw confidence are drawn. The smoothed one is
+        readable; the raw one is what the threshold actually tests, and dips in
+        it can hide under the smoothed line. The epochs the scorer will visit
+        are marked directly, so you can see which they are rather than guess
+        from where a line crosses a curve.
         """
         self.ax.clear(); self.axc.clear()
         self._n = n = len(labels)
@@ -219,8 +219,8 @@ class HypnogramCanvas(FigureCanvas):
             self.ax.plot(x[np.flatnonzero(manual)],
                          np.full(int(np.sum(manual)), 2.65), "|",
                          color="#1a7f37", ms=6, mew=1.2)
-            # as a right-aligned title, not an in-axes label: at 4 s per epoch a
-            # long recording fills the tick row and an overlay would sit on top
+            # placed as a title rather than inside the plot, where a long
+            # recording's ticks would run underneath it
             self.ax.set_title(f"green ticks = manually reviewed "
                               f"({int(np.sum(manual))} epochs)",
                               loc="right", fontsize=7, color="#1a7f37", pad=2)
@@ -233,7 +233,7 @@ class HypnogramCanvas(FigureCanvas):
             self.ax.spines[sp].set_visible(False)
 
         if conf_raw is not None and len(conf_raw) == n:
-            # raw per-epoch confidence, faint: this is what the threshold tests
+            # the unsmoothed confidence, drawn faint: this is what the threshold tests
             self.axc.fill_between(x, 0, conf_raw, step="post",
                                   color="#4C78A8", alpha=0.22, lw=0)
         if confidence is not None and len(confidence) == n:
@@ -652,8 +652,8 @@ class MainWindow(QMainWindow):
         def job(log):
             import json
             from somnus.predict import load_model
-            # which recordings did this model train on? evaluating on those is
-            # in-sample and must not be read as generalization
+            # Which recordings this model learned from. Tested on those it
+            # will always look good, which says nothing about new data.
             try:
                 trained_on = set(json.load(open(other))
                                  .get("finetune", {}).get("recordings", []))
@@ -908,12 +908,12 @@ class MainWindow(QMainWindow):
             if self.project else []
 
     def ensure_frame_times(self, queue: list[core.Recording]) -> bool:
-        """Settle how recordings lacking frame times are handled, before scoring.
+        """Ask what to do about recordings whose video has no frame times.
 
-        Runs on the GUI thread. Returns False if the user cancelled, in which
-        case no work should start. The warning is shown once per user; the frame
-        rate is still asked for whenever it is not already known, because it is
-        something only the user can supply.
+        Asked before any scoring starts, because the answer is something only
+        the user has. Returns False if they cancelled, in which case nothing
+        should run. The explanation appears once per user, but the frame rate is
+        still requested whenever it is not already known.
         """
         need = [r for r in queue if r.needs_frame_times]
         if not need:
@@ -948,7 +948,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _selected(self) -> core.Recording | None:
-        """The row the cursor is on (used for Review, which is one at a time)."""
+        """The row currently highlighted, for the tabs that work on one at a time."""
         rows = {i.row() for i in self.tbl.selectedIndexes()}
         if not rows or not self.project:
             return None
@@ -1107,7 +1107,8 @@ class MainWindow(QMainWindow):
         conf_raw = self.proba.max(axis=1)
         conf = core.smooth_trace(conf_raw, int(self.sp_smooth.value()))
         thr = float(self.sp_thr.value())
-        # same criteria as the scorer's jump, so the ticks match what it visits
+        # picked the same way the scorer's jump button picks, so the ticks
+        # mark exactly the epochs it will visit
         smoothed = self.labels != self.raw
         eligible = (conf_raw < thr) & ~smoothed
         self.hyp.draw_hypnogram(self.labels, conf, manual, threshold=thr,
@@ -1145,7 +1146,7 @@ class MainWindow(QMainWindow):
             f"confidence {self.proba[e].max():.3f}  |  source {src}{sm}")
 
     def on_launch_scorer(self):
-        """Write the scorer's inputs into the project, then launch it."""
+        """Hand this recording over to the manual scorer for correction."""
         if not self.rec_name or self.project is None:
             return
         r = self.project.get(self.rec_name)
@@ -1154,8 +1155,8 @@ class MainWindow(QMainWindow):
         scored, meta = core.write_viewer_bundle(
             self.project, r, self.labels, self.proba, self.raw, self.store)
 
-        # The scorer is part of this package; launch it as a module so the
-        # hand-off works identically from a checkout and an installed wheel.
+        # Launch the scorer as a module, so it works the same whether Somnus
+        # was installed or is being run from a source checkout.
         import subprocess
         try:
             proc = subprocess.Popen(

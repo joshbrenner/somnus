@@ -54,7 +54,7 @@ RENDER_CACHE = {
 }
 
 def perform_resize(win_name, img_w, img_h):
-    """Fit the video and panels to the screen, keeping proportions."""
+    """Resize the scorer window and move it clear of the macOS menu bar."""
     cv2.resizeWindow(win_name, img_w, img_h)
     cv2.waitKey(1)
     # Shift Y down 40 px to stay clear of the macOS menu bar
@@ -62,13 +62,11 @@ def perform_resize(win_name, img_w, img_h):
     cv2.waitKey(1)
 
 def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
-    """Model belief for the epochs currently on screen.
+    """Draw what the model believes about the stretch on screen.
 
-    Shows the mean probability of each state over the visible window, the mean
-    confidence, and how many visible epochs fall below the certainty threshold --
-    what the model thinks, and how sure it is, which is what you need while
-    relabeling. Falls back to a hint when the viewer was opened without model
-    metadata.
+    The average probability of each state, how confident it was, and how many
+    visible epochs it was unsure about. Shows a hint instead when the scorer was
+    opened without the model's output.
     """
     img = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.rectangle(img, (0, 0), (w, h), (20, 20, 20), -1)
@@ -150,9 +148,8 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
         x2 = int(((bin_start + state.bin_step - window_start_sec) / window_duration) * w)
 
         color = COLORS.get(bin_state, (50, 50, 50))
-        # Manually affirmed bins are drawn in a second, more opaque pass: same
-        # color so the state still reads at a glance, stronger so it is obvious
-        # which stretches have been checked.
+        # Epochs the user has confirmed are drawn again more solidly: same
+        # colour, so the state still reads at a glance, but obviously checked.
         if row.get('Confirmed', 0):
             confirmed_spans.append((x1, x2, color))
             continue
@@ -326,19 +323,15 @@ def draw_sidebar(state, h, w_side):
     y = 80 + rows * 50 + 4
     state.uncertain_btn = None
     if getattr(state, 'review_meta', None) is not None:
-        # Everything below must fit inside `h`, which is only ~250 px at the
-        # smallest video size. Draw each element only if it fits, and keep the
-        # per-epoch counts in the belief panel (which has room) rather than
-        # duplicating them here.
+        # There may be as little as 250 px of height here, so each control is
+        # drawn only if it fits.
         if y + 46 <= h:
             cv2.line(img, (10, y), (w_side - 10, y), (100, 100, 100), 1)
             y += 6
 
-            # Jump to the next epoch forward in TIME whose confidence is below
-            # the threshold. Temporal order, not most-uncertain-first, so review
-            # follows the recording. HMM-smoothed epochs are skipped: smoothing
-            # changing a label is not the model being unsure, and they are
-            # already flagged by their own color.
+            # Jumps forward through the recording to the next epoch the model
+            # was unsure about. Epochs the smoothing changed are skipped; they
+            # have their own colour already.
             bx1, bx2 = 10, w_side - 10
             by1, by2 = y, y + 34
             state.uncertain_btn = (bx1, by1, bx2, by2)
