@@ -27,8 +27,6 @@ from importlib.resources import files as _resource_files
 import numpy as np
 import pandas as pd
 
-# The released weights ship inside the package; wheels install unpacked, so
-# this resolves to a real file path usable as a CLI default and GUI display.
 DEFAULT_ARTIFACT = str(_resource_files("somnus.models")
                        .joinpath("model_somnus_1.0.json"))
 
