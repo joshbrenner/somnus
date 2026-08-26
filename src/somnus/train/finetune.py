@@ -16,12 +16,6 @@ chosen by testing on your own recordings instead of being asserted. By adjusting
 this setting, you can build an accurate custom model with just a handful of 
 manual corrections in each sleep state.
 
-GUARDRAILS
-Any improvement is measured on recordings held back from the fitting, so the
-number reported is not the model grading its own homework. If no setting beats
-the shipped model, that is reported and the shipped model is recommended
-unchanged.
-
 Usage:
     python -m somnus.train.finetune --labels mydata.csv --out my_model.json
     python -m somnus.train.finetune --labels mydata.csv --lam 10 --no-cv
@@ -94,9 +88,6 @@ def fit_anchored(X: np.ndarray, y_idx: np.ndarray, k: int,
 
 def balanced_weights(y_idx: np.ndarray, k: int) -> np.ndarray:
     """Weight the states so a rare one still counts.
-
-    Without this a phenotype with very little REM would simply be outvoted by
-    Wake and NREM.
     """
     counts = np.bincount(y_idx, minlength=k).astype(float)
     w = np.zeros(k)
@@ -110,10 +101,9 @@ def adapt_transitions(df: pd.DataFrame, states: list[str], A_base: np.ndarray,
                       kappa: float = KAPPA_DEFAULT) -> np.ndarray:
     """Re-measure how often sleep moves between states, from your labels.
 
-    The shipped rates are kept as a starting point and pulled toward yours by
-    however much evidence you have; `kappa` decides how firmly they are held.
-    Only genuinely consecutive epochs count, so a gap left by an unscored stretch
-    never looks like a transition.
+    The default rates are kept as a starting point and pulled toward yours by
+    however much evidence you have; `kappa` decides how firmly they are held. Critical
+    for disease models with fragmented sleep.
     """
     k = len(states)
     idx = {s: i for i, s in enumerate(states)}
@@ -183,9 +173,7 @@ def _folds(groups: np.ndarray, epochs: np.ndarray,
     """Split the data for testing: hold out one recording at a time.
 
     With only one recording, it is cut into a few blocks of continuous time
-    instead. Never random epochs -- neighbouring epochs are nearly identical, so
-    a random split would let the model see the answers and report a score far
-    better than it deserves.
+    instead. 
     """
     uniq = pd.unique(groups)
     if len(uniq) > 1:
@@ -210,7 +198,7 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
 
     Tries a range of settings, measures each on recordings held back from the
     fitting, and keeps the best. Returns the new model along with the numbers
-    behind the choice, or reports that none beat the shipped model.
+    behind the choice.
     """
     states = art["states"]
     k = len(states)
