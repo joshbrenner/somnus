@@ -13,8 +13,8 @@ Five tabs: **Project → Score → Review & Relabel → Fine-tune → Evaluate**
 
 | File | Role |
 |---|---|
-| `somnus/gui/core.py` | Everything non-GUI: project state, the provenance-aware label store, featurising, scoring, uncertainty ranking, QC flags, architecture export. Qt-free, so it can be scripted and tested headlessly. |
-| `somnus/gui/app.py` | The Qt window: four tabs plus two embedded matplotlib canvases. |
+| `somnus/gui/core.py` | Everything non-GUI: project state, the provenance-aware label store, featurizing, scoring, uncertainty ranking, QC flags, architecture export. Qt-free, so it can be scripted and tested headlessly. |
+| `somnus/gui/app.py` | The Qt window: five tabs plus two embedded matplotlib canvases. |
 
 ## Tabs
 
@@ -38,8 +38,8 @@ plus whether velocity is available.
 confidence panel underneath: raw per-epoch confidence, an adjustable
 rolling-median overlaid (default 1 min), the
 low-certainty threshold as a dashed red line, and red ticks marking the epochs
-that fail the threshold. Green ticks on the ribbon mark human-reviewed epochs. 
-Relabelling happens in the scorer (see below).
+that fail the threshold. Green ticks on the ribbon mark manually reviewed epochs. 
+Relabeling happens in the scorer (see below).
 
 **Evaluate** 
 
@@ -47,7 +47,7 @@ Relabelling happens in the scorer (see below).
   fine-tuned model, measuring each against your manual labels only.
 - *Architecture breakdown* gives % time, minutes, bout counts, mean/median bout
   durations, transition counts and latencies per recording. Manual labels replace
-  the model's wherever they exist, and a `human_epochs` column says how many.
+  the model's wherever they exist, and a `manual_epochs` column says how many.
 
 Both export to CSV.
 
@@ -76,7 +76,7 @@ The scorer gains three things from that metadata:
   changed, hatched along the top of the timeline
 - a **Confirm brush** (key **6**) that affirms the label
   already present without changing it. Confirmed bins render more opaque in the
-  same state color; **Erase** (key **7**) clears the confirmation. This is how a
+  same state color; **Erase** (key **7**) clears the confirmation. This is how
   the scorer records "the model got this right", which is also used in fine tuning.
 
 Smoothed epochs are **excluded from the uncertain queue** by design: smoothing
@@ -88,18 +88,17 @@ brush.** The hand-off CSV starts as the model's own predictions, so an untouched
 epoch returns identical — counting those as "confirmed" would turn the model's 
 entire output into training targets, a feedback loop that raises apparent confidence while adding no
 information. Epochs painted **Artifact** or **Unclear** are recorded as
-`human_excluded` and kept out of fine-tuning entirely.
+`manual_excluded` and kept out of fine-tuning entirely.
 
-## Also in `core.py`, not yet surfaced in the UI
+## Also in `core.py`
 
 - `qc_flags()` — REM not preceded by NREM, sub-8 s REM bouts, very short bouts.
   Hints, never auto-corrections: "unusual" is exactly what a disease model may
-  legitimately produce.
+  legitimately produce. Reported in the Score tab's summary; no dedicated
+  export.
 - `architecture()` — % time and minutes per state, bout counts, mean/median bout
   duration, transition counts, latency to first NREM/REM. The paper numbers.
-
-Both are computed and reported in the Score tab's summary; a dedicated export
-button is still to come.
+  Exported from the Evaluate tab's *Architecture breakdown*.
 
 ## Known gaps
 

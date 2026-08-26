@@ -22,7 +22,7 @@ the last as EMG. For `dataset="bids"` add `"channels"` (a BIDS `channels.tsv`,
 used to identify EEG/EMG) and optionally `"events"` (a stage-scored
 `events.tsv`).
 
-Labels are OPTIONAL throughout: scoring an unlabelled recording is the normal
+Labels are OPTIONAL throughout: scoring an unlabeled recording is the normal
 case. All source data is opened READ-ONLY.
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 import mne
 
-# Feature computation: band definitions, harmonisation tiers, PSD.
+# Feature computation: band definitions, harmonization tiers, PSD.
 from somnus import features as H
 
 mne.set_log_level("ERROR")
@@ -50,17 +50,12 @@ STATES = ["Wake", "NREM", "REM"]
 # ---- model feature layout ---------------------------------------------------
 # NOTE: `delta_index` is deliberately NOT a model input. By construction
 #   delta_index = (delta - (t1 - delta)) / t1 = 2 * delta_rel - 1,
-# an exact affine transform of delta_rel (verified to 4.4e-16). For a linear
-# model with an intercept the two are linearly dependent, and after
-# within-recording z-scoring they become the *identical* column -- so including
-# both duplicated 5 columns (the feature and its 4 rolling-context variants) and
-# left the design matrix rank-deficient (condition number 6.1e15). L-BFGS then
-# stopped anywhere along the resulting flat ridge, so fitted coefficients were
-# not reproducible (they moved by 0.08 between runs whose features differed only
-# at 1e-10) even though predictions barely changed (0.06% of labels).
-# Dropping it takes the condition number to 1.0e2 with no loss of information.
-# It is still computed and stored in the epoch table for plotting and continuity
-# with SleepScorer.py -- it is simply not fed to the classifier.
+# an exact affine transform of delta_rel. For a linear model with an intercept
+# the two are linearly dependent, and after within-recording z-scoring they
+# become the *identical* column, which leaves the design matrix rank-deficient
+# and the fitted coefficients unidentifiable. It carries no information that
+# delta_rel does not. It is still emitted in the epoch table for plotting; it is
+# simply not fed to the classifier.
 UNIVERSAL = ["delta_rel", "theta_rel", "alpha_rel", "beta_rel",
              "theta_delta_log", "t1_power_log_z", "emg_low_log_z"]
 # optional block -> (columns, indicator name)
@@ -149,8 +144,7 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
 
 # ------------------------------------------------------------- EEG selection
 def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
-    """Highest 0.5-30 / >30 Hz power ratio over the first 5 min (as in
-    SleepScorer.py's channel chooser)."""
+    """Highest 0.5-30 / >30 Hz power ratio over the first 5 min."""
     if len(eeg_idx) == 1:
         return eeg_idx[0]
     stop = min(int(300 * sfreq), raw.n_times)
@@ -166,7 +160,7 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
     return best
 
 
-# ------------------------------------------------------------- featurisation
+# ------------------------------------------------------------- featurization
 def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
     """Load one recording and return its per-epoch feature table.
 
@@ -273,9 +267,9 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
 def model_columns(df: pd.DataFrame, zscored: bool = False) -> list[str]:
     """Feature columns the model consumes, including context and indicators.
 
-    zscored=True swaps every feature for its within-recording z-scored variant
-    (site-offset removed), which is the fix for the cross-lab fingerprinting
-    problem measured in the first evaluation.
+    zscored=True swaps every feature for its within-recording z-scored variant,
+    which removes the per-site offset a model would otherwise latch onto as a
+    site fingerprint.
     """
     base = list(UNIVERSAL)
     for cols, _ in OPTIONAL.values():

@@ -1,20 +1,20 @@
-"""Fine-tune model_somnus_1.0 on a user's own labelled recordings.
+"""Fine-tune model_somnus_1.0 on a user's own labeled recordings.
 
 WHY FINE-TUNING RATHER THAN RETRAINING
 --------------------------------------
-Pooling the user's data with the 20k-epoch base training set and refitting would
-drown a disease phenotype: a mouse line with fragmented or low-amplitude NREM
-contributes a few hundred epochs against ~3.8k epochs of normal NREM, so the
-refit would mostly relearn "normal" and keep mis-scoring the phenotype. Fine
-tuning instead *starts* from the base model and moves it only as far as the new
-data justifies.
+Pooling the user's data with the base training set and refitting would drown a
+disease phenotype: a mouse line with fragmented or low-amplitude NREM
+contributes a few hundred epochs against a training set orders of magnitude
+larger, so the refit would mostly relearn "normal" and keep mis-scoring the
+phenotype. Fine tuning instead *starts* from the base model and moves it only
+as far as the new data justifies.
 
 HOW
 ---
 Multinomial logistic loss on the new data, with an L2 penalty that anchors the
 weights to the base model rather than to zero:
 
-    minimise   sum_i s_i * CE(y_i, softmax(W x_i + b))
+    minimize   sum_i s_i * CE(y_i, softmax(W x_i + b))
                + (lam/2) * ||W - W_base||^2
                + (lam/2) * ||b - b_base||^2
 
@@ -30,7 +30,7 @@ very little REM still gets REM pulled up rather than ignored.
 WHAT IS AND IS NOT ADAPTED
   adapted:      logistic weights + intercepts (anchored), and optionally the
                 HMM transition matrix (below).
-  NOT adapted:  the per-feature centring/scaling in the artifact. Those define
+  NOT adapted:  the per-feature centering/scaling in the artifact. Those define
                 the feature contract the weights are expressed in; refitting them
                 would silently change what every weight means. Note features are
                 already z-scored *within recording* upstream, so per-animal
@@ -51,9 +51,10 @@ GUARDRAILS
     reported gain is out-of-sample, not the fit to its own training epochs.
   * If the user has one recording, it is split into contiguous time blocks
     instead (never random epochs -- sleep is autocorrelated and random splits
-    leak between neighbours).
-  * "Forgetting" is measured explicitly on the base training matrix, so a
-    fine-tune that wrecks general performance is visible rather than silent.
+    leak between neighbors).
+  * Given a reference feature table (`--base-csv`), "forgetting" is measured
+    on it explicitly, so a fine-tune that wrecks general performance is visible
+    rather than silent.
   * If no lam beats the base model out-of-sample, that is reported and the base
     model is recommended unchanged.
 
@@ -138,7 +139,7 @@ def adapt_transitions(df: pd.DataFrame, states: list[str], A_base: np.ndarray,
     """Re-estimate P(state_t | state_{t-1}) with A_base as a Dirichlet prior.
 
     Only adjacent epochs from the same recording count, so gaps left by artifact
-    or unlabelled epochs never create phantom transitions.
+    or unlabeled epochs never create phantom transitions.
     """
     k = len(states)
     idx = {s: i for i, s in enumerate(states)}
@@ -190,7 +191,7 @@ def prepare(art: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.nda
     """Feature table -> (X, y_idx, groups). Keeps only rows with a known state."""
     states = art["states"]
     if "state" not in df.columns:
-        raise ValueError("labelled data must have a 'state' column")
+        raise ValueError("labeled data must have a 'state' column")
     keep = df["state"].isin(states).to_numpy()
     if "epoch" not in df.columns:
         df = df.assign(epoch=np.arange(len(df)))
@@ -207,7 +208,7 @@ def _folds(groups: np.ndarray, epochs: np.ndarray,
     """Leave-one-recording-out; if only one recording, contiguous time blocks.
 
     Never random epochs: adjacent epochs are highly correlated, so a random split
-    would let the model see each test epoch's neighbours and inflate the score.
+    would let the model see each test epoch's neighbors and inflate the score.
     """
     uniq = pd.unique(groups)
     if len(uniq) > 1:
@@ -242,7 +243,7 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
     epochs = sub["epoch"].to_numpy()
     n_rec = len(pd.unique(groups))
     if verbose:
-        print(f"new data: {len(X)} labelled epochs from {n_rec} recording(s)")
+        print(f"new data: {len(X)} labeled epochs from {n_rec} recording(s)")
         for i, s in enumerate(states):
             print(f"  {s:5} {int((y == i).sum())}")
 
@@ -372,7 +373,7 @@ def forgetting_check(art_base: dict, art_new: dict, base_csv: str,
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--labels", required=True,
-                    help="featurised CSV with a 'state' column (and ideally "
+                    help="featurized CSV with a 'state' column (and ideally "
                          "'recording' and 'epoch')")
     ap.add_argument("--model", default=DEFAULT_ARTIFACT)
     ap.add_argument("--out", default=None, help="write the fine-tuned artifact here")

@@ -3,9 +3,8 @@
 Logistic-regression scorer for **Wake / NREM / REM** on 4 s epochs of mouse
 EEG/EMG (+ optional video-derived velocity), with an HMM/Viterbi model for temporal smoothing.
 
-Developed on Python 3.13 (openseize, mne, scikit-learn, pandas, scipy,
-matplotlib, joblib, PySide6, opencv-python, av). Requires Python 3.12+, the
-floor set by openseize.
+Developed on Python 3.13 (openseize, mne, pandas, scipy, matplotlib,
+PySide6, opencv-python, av). Requires Python 3.12+, the floor set by openseize.
 
 ## Layout
 
@@ -14,7 +13,7 @@ floor set by openseize.
 | `src/somnus/` | The installable package (`pip install -e .`). |
 | `src/somnus/predict.py` | Self-contained scorer — numpy/pandas only. What the GUI and batch tools call. |
 | `src/somnus/models/` | The released JSON artifact, shipped as package data. |
-| `src/somnus/features/` | Feature computation: PSD, band definitions, harmonisation tiers. Pure — arrays in, features out. |
+| `src/somnus/features/` | Feature computation: PSD, band definitions, harmonization tiers. Pure — arrays in, features out. |
 | `src/somnus/data/datasets.py` | `featurize()`: one recording (EDF + optional scoring and video tracking) → per-epoch feature table. |
 | `src/somnus/train/finetune.py` | Anchored fine-tuning of the released model on your own labels. |
 | `src/somnus/gui/` | The 5-tab PySide6 app; `core.py` is Qt-free and testable headless. |
@@ -30,7 +29,7 @@ python -m somnus.predict --score myrec.edf --out scored.csv
 
 | Module | Role |
 |---|---|
-| `somnus.features` | **Feature computation.** Pure: arrays in → features out. Welch PSD via openseize; holds the band definitions and cross-site harmonisation tiers. |
+| `somnus.features` | **Feature computation.** Pure: arrays in → features out. Welch PSD via openseize; holds the band definitions and cross-site harmonization tiers. |
 | `somnus.data.datasets` | `featurize()`: EDF (+ optional scoring, video tracking) → per-epoch feature table, with measured-bandwidth tier gating. |
 | `somnus.predict` | Design matrix, logistic probabilities, HMM/Viterbi decode. Reads the JSON artifact; numpy/pandas only. |
 | `somnus.train.finetune` | Anchored fine-tuning: adapt the released weights to your labels. |
@@ -50,7 +49,7 @@ weights.
 
 | File | What it is |
 |---|---|
-| `src/somnus/models/model_somnus_1.0.json` | **The release artifact.** Plain JSON: columns, centring stats, coefficients, transition matrix, priors. ~15 KB, no pickles. Ships in the wheel. |
+| `src/somnus/models/model_somnus_1.0.json` | **The release artifact.** Plain JSON: columns, centering stats, coefficients, transition matrix, priors. ~15 KB, no pickles. Ships in the wheel. |
 | `src/somnus/predict.py` | **Self-contained scorer** |
 
 ```python
@@ -64,7 +63,7 @@ labels, proba = predict(art, feature_df)   # feature_df from somnus.data.dataset
 
 Released variant `unified_z_noind`, 70 features, fitted on 61,164 epochs drawn
 from six labs. Tested on held-out public-corpus mice (74 subjects, 1,515,059
-labelled epochs):
+labeled epochs):
 
 | metric | value |
 |---|---|

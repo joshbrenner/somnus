@@ -1,9 +1,8 @@
 """Somnus GUI -- tabbed desktop app for scoring, reviewing and fine-tuning.
 
-Thin vertical slice: one recording end to end.
-    Project  ->  Score  ->  Review & Relabel  ->  Fine-tune
+    Project  ->  Score  ->  Review & Relabel  ->  Fine-tune  ->  Evaluate
 
-Layout follows DeepLabCut's tabbed workflow. All heavy work (featurising,
+Layout follows DeepLabCut's tabbed workflow. All heavy work (featurizing,
 scoring, fine-tuning) runs on a worker thread so the window stays responsive.
 
 Nothing is ever written outside the project directory; source recordings are
@@ -119,7 +118,7 @@ class HypnogramCanvas(FigureCanvas):
             epoch = ev.xdata * 3600.0 / self._epoch_sec
             self.seeked.emit(int(np.clip(round(epoch), 0, self._n - 1)))
 
-    def draw_hypnogram(self, labels, confidence=None, human=None,
+    def draw_hypnogram(self, labels, confidence=None, manual=None,
                        threshold=None, conf_raw=None, eligible=None):
         """Draw the ribbon and the confidence panel.
 
@@ -145,14 +144,14 @@ class HypnogramCanvas(FigureCanvas):
                 self.ax.fill_between(x, yy - 0.4, yy + 0.4, where=m,
                                      step="post", color=STATE_COLORS[s],
                                      alpha=0.75, lw=0)
-        if human is not None and np.any(human):
-            self.ax.plot(x[np.flatnonzero(human)],
-                         np.full(int(np.sum(human)), 2.65), "|",
+        if manual is not None and np.any(manual):
+            self.ax.plot(x[np.flatnonzero(manual)],
+                         np.full(int(np.sum(manual)), 2.65), "|",
                          color="#1a7f37", ms=6, mew=1.2)
             # as a right-aligned title, not an in-axes label: at 4 s per epoch a
             # long recording fills the tick row and an overlay would sit on top
-            self.ax.set_title(f"green ticks = human-reviewed "
-                              f"({int(np.sum(human))} epochs)",
+            self.ax.set_title(f"green ticks = manually reviewed "
+                              f"({int(np.sum(manual))} epochs)",
                               loc="right", fontsize=7, color="#1a7f37", pad=2)
         self.ax.set_yticks(list(STATE_Y.values()))
         self.ax.set_yticklabels(list(STATE_Y.keys()), fontsize=8)
@@ -258,14 +257,14 @@ class MainWindow(QMainWindow):
         tick_note = QLabel(
             "<b>Tick the recordings you want to work with.</b> The Score tab "
             "processes everything ticked; fine-tuning uses the ticked "
-            "recordings that have human labels.")
+            "recordings that have manual labels.")
         tick_note.setWordWrap(True)
         lay.addWidget(tick_note)
 
         self.tbl = QTableWidget(0, 7)
         self.tbl.setHorizontalHeaderLabels(
             ["use", "recording", "labels", "video", "tracking",
-             "velocity", "human epochs"])
+             "velocity", "manual epochs"])
         hh = self.tbl.horizontalHeader()
         # Only the recording name stretches; the rest are fixed-ish. Long
         # filenames are elided with the full path on hover. Without this the
@@ -444,7 +443,7 @@ class MainWindow(QMainWindow):
         info = QLabel(
             "Fine-tuning adapts the model to <b>your</b> recordings without "
             "retraining from scratch, so a phenotype is not diluted by the "
-            "normal-sleep training set. It trains only on <b>human-sourced</b> "
+            "normal-sleep training set. It trains only on <b>manually sourced</b> "
             "labels; model predictions are never used as training targets.")
         info.setWordWrap(True); lay.addWidget(info)
 
@@ -464,7 +463,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(box)
 
         row = QHBoxLayout()
-        self.b_ft = QPushButton("Fine-tune on human-labelled epochs")
+        self.b_ft = QPushButton("Fine-tune on manually labeled epochs")
         self.b_ft.clicked.connect(self.on_finetune)
         row.addWidget(self.b_ft)
         self.lbl_ft = QLabel(""); row.addWidget(self.lbl_ft); row.addStretch(1)
@@ -484,8 +483,8 @@ class MainWindow(QMainWindow):
         info = QLabel(
             "Runs on the recordings <b>ticked on the Project tab</b>. "
             "<b>Compare models</b> scores each one with the base model and with "
-            "another model, and measures both against your human labels. "
-            "<b>Architecture</b> summarises sleep structure per recording — the "
+            "another model, and measures both against your manual labels. "
+            "<b>Architecture</b> summarizes sleep structure per recording — the "
             "numbers that go in a paper.")
         info.setWordWrap(True); lay.addWidget(info)
 
@@ -576,7 +575,7 @@ class MainWindow(QMainWindow):
             import json
             from somnus.predict import load_model
             # which recordings did this model train on? evaluating on those is
-            # in-sample and must not be read as generalisation
+            # in-sample and must not be read as generalization
             try:
                 trained_on = set(json.load(open(other))
                                  .get("finetune", {}).get("recordings", []))
@@ -585,18 +584,18 @@ class MainWindow(QMainWindow):
             rows = []
             for i, r in enumerate(queue, 1):
                 st = core.LabelStore(proj, r.name)
-                hu = st.df[st.human_mask()]
+                hu = st.df[st.manual_mask()]
                 if not len(hu):
-                    log(f"[{i}/{len(queue)}] {r.name}: no human labels, skipped")
+                    log(f"[{i}/{len(queue)}] {r.name}: no manual labels, skipped")
                     continue
-                log(f"[{i}/{len(queue)}] {r.name}: {len(hu)} human epochs …")
+                log(f"[{i}/{len(queue)}] {r.name}: {len(hu)} manual epochs …")
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 feat = core.featurize(r, cache=cache)
                 truth = hu.set_index("epoch")["state"]
                 idx = truth.index.to_numpy()
                 idx = idx[(idx >= 0) & (idx < len(feat))]
                 y = truth.loc[idx].to_numpy()
-                rec_row = {"recording": r.name, "human_epochs": len(idx)}
+                rec_row = {"recording": r.name, "manual_epochs": len(idx)}
                 for tag, path in (("base", base), ("compare", other)):
                     lab, _ = core.score(feat, path, decode=decode,
                                         stickiness=stick)
@@ -613,7 +612,7 @@ class MainWindow(QMainWindow):
                 rows.append(rec_row)
             if not rows:
                 raise RuntimeError(
-                    "No ticked recording has human labels. Relabel some epochs "
+                    "No ticked recording has manual labels. Relabel some epochs "
                     "in the Review tab first — comparison needs ground truth.")
             return dict(kind="compare", df=pd.DataFrame(rows),
                         model=name, trained_on=trained_on)
@@ -639,16 +638,16 @@ class MainWindow(QMainWindow):
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 feat = core.featurize(r, cache=cache)
                 lab, _ = core.score(feat, model, decode=decode, stickiness=stick)
-                # prefer human labels wherever they exist
+                # prefer manual labels wherever they exist
                 st = core.LabelStore(proj, r.name)
                 n_hu = 0
                 if len(st.df):
-                    hu = st.df[st.human_mask()]
+                    hu = st.df[st.manual_mask()]
                     for e, s in zip(hu["epoch"].to_numpy(), hu["state"].to_numpy()):
                         if 0 <= int(e) < len(lab):
                             lab[int(e)] = s; n_hu += 1
                 a = core.architecture(lab)
-                rows.append({"recording": r.name, "human_epochs": n_hu, **a})
+                rows.append({"recording": r.name, "manual_epochs": n_hu, **a})
             return dict(kind="architecture", df=pd.DataFrame(rows))
 
         self.bar_ev.show(); self.b_arch.setEnabled(False)
@@ -667,12 +666,12 @@ class MainWindow(QMainWindow):
             better = int((df["delta_acc"] > 0).sum())
             mean_d = float(df["delta_acc"].mean())
             msg = (f"{res['model']} vs base on {len(df)} recording(s), scored "
-                   f"against human labels only. Mean accuracy change "
+                   f"against manual labels only. Mean accuracy change "
                    f"<b>{mean_d:+.4f}</b>; better on {better}/{len(df)}.")
             if n_in:
                 msg += (f" <b>{n_in} recording(s) are marked in_sample</b> — the "
                         f"compared model was fine-tuned on them, so those rows "
-                        f"measure fit, not generalisation. Judge the model on "
+                        f"measure fit, not generalization. Judge the model on "
                         f"the rows without that flag.")
             else:
                 msg += (" No recording here was used to fine-tune that model, so "
@@ -682,8 +681,8 @@ class MainWindow(QMainWindow):
             tot = df["recording_hours"].sum() if "recording_hours" in df else 0
             self.lbl_ev.setText(
                 f"{len(df)} recording(s), {tot:.1f} h total. Where you have "
-                f"human labels they replace the model's, so the numbers reflect "
-                f"your best current scoring (the <i>human_epochs</i> column says "
+                f"manual labels they replace the model's, so the numbers reflect "
+                f"your best current scoring (the <i>manual_epochs</i> column says "
                 f"how many). Use <b>Export table…</b> for the CSV.")
         self.log(f"evaluation done ({res['kind']})")
 
@@ -784,7 +783,7 @@ class MainWindow(QMainWindow):
                     "put the matching timestamps file beside the coordinates, or "
                     "remove the coordinates to score without velocity.")
             self.tbl.setItem(row, 5, vel)
-            nh = QTableWidgetItem(str(store.n_human()))
+            nh = QTableWidgetItem(str(store.n_manual()))
             nh.setTextAlignment(Qt.AlignCenter)
             self.tbl.setItem(row, 6, nh)
         self.tbl.blockSignals(False)
@@ -859,7 +858,7 @@ class MainWindow(QMainWindow):
         def job(log):
             results = []
             for i, r in enumerate(queue, 1):
-                log(f"[{i}/{len(queue)}] {r.name}: featurising …")
+                log(f"[{i}/{len(queue)}] {r.name}: featurizing …")
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 try:
                     feat = core.featurize(r, cache=cache)
@@ -877,13 +876,13 @@ class MainWindow(QMainWindow):
                 n_new = store.set_model_labels(
                     feat["epoch"].to_numpy(), feat["t_start"].to_numpy(),
                     lab, proba.max(axis=1), model)
-                if r.scored and store.n_human() == 0:
+                if r.scored and store.n_manual() == 0:
                     k = store.import_manual(r.scored, len(feat))
                     if k:
                         log(f"    imported {k} existing manual labels")
                 store.save()
                 log(f"    wrote {n_new} model rows "
-                    f"({store.n_human()} human rows preserved)")
+                    f"({store.n_manual()} manual rows preserved)")
                 results.append(dict(rec=r, feat=feat, labels=lab, raw=raw,
                                     proba=proba, store=store))
             if not results:
@@ -957,25 +956,25 @@ class MainWindow(QMainWindow):
         self.rebuild_review()
 
     # ----------------------------------------------------------------- review
-    def _human_mask(self) -> np.ndarray:
-        human = np.zeros(len(self.labels), dtype=bool)
+    def _manual_mask(self) -> np.ndarray:
+        manual = np.zeros(len(self.labels), dtype=bool)
         if self.store is not None and len(self.store.df):
-            h = self.store.df.loc[self.store.human_mask(), "epoch"].to_numpy()
-            h = h[(h >= 0) & (h < len(human))]
-            human[h.astype(int)] = True
-        return human
+            h = self.store.df.loc[self.store.manual_mask(), "epoch"].to_numpy()
+            h = h[(h >= 0) & (h < len(manual))]
+            manual[h.astype(int)] = True
+        return manual
 
     def rebuild_review(self):
         if self.labels is None:
             return
-        human = self._human_mask()
+        manual = self._manual_mask()
         conf_raw = self.proba.max(axis=1)
         conf = core.smooth_trace(conf_raw, int(self.sp_smooth.value()))
         thr = float(self.sp_thr.value())
         # same criteria as the scorer's jump, so the ticks match what it visits
         smoothed = self.labels != self.raw
         eligible = (conf_raw < thr) & ~smoothed
-        self.hyp.draw_hypnogram(self.labels, conf, human, threshold=thr,
+        self.hyp.draw_hypnogram(self.labels, conf, manual, threshold=thr,
                                 conf_raw=conf_raw, eligible=eligible)
         n_over = int(smoothed.sum())
         n_low = int(eligible.sum())
@@ -983,10 +982,10 @@ class MainWindow(QMainWindow):
             f"{len(self.labels)} epochs. <b>{n_low}</b> fall below the "
             f"{thr:.2f} certainty threshold — the scorer's <i>Next low "
             f"certainty</i> button walks these in time order. <b>{n_over}</b> "
-            f"were changed by the HMM smoothing; those get their own colour in "
+            f"were changed by the HMM smoothing; those get their own color in "
             f"the scorer and are deliberately <i>excluded</i> from that walk, "
             f"since smoothing changing a label is not the same as the model "
-            f"being unsure. {int(human.sum())} epochs are human-labelled.")
+            f"being unsure. {int(manual.sum())} epochs are manually labeled.")
         self.goto_epoch(self.cur_epoch if self.cur_epoch < len(self.labels) else 0)
 
     def goto_epoch(self, epoch: int):
@@ -1045,7 +1044,7 @@ class MainWindow(QMainWindow):
         self.store.save()
         # reflect the corrections in the hypnogram
         if len(self.store.df):
-            h = self.store.df[self.store.human_mask()]
+            h = self.store.df[self.store.manual_mask()]
             for e, s in zip(h["epoch"].to_numpy(), h["state"].to_numpy()):
                 if 0 <= int(e) < len(self.labels):
                     self.labels[int(e)] = s
@@ -1055,11 +1054,11 @@ class MainWindow(QMainWindow):
                f"{res['excluded']} marked unscorable, "
                f"{res.get('reverted', 0)} reverted to the model "
                f"(edited then changed back). "
-               f"{self.store.n_human()} labels now usable for fine-tuning, "
+               f"{self.store.n_manual()} labels now usable for fine-tuning, "
                f"{self.store.n_excluded()} excluded. "
                f"Only epochs whose label CHANGED are counted — an untouched "
                f"epoch comes back identical to the model's own prediction, and "
-               f"treating those as human labels would train the model on itself.")
+               f"treating those as manual labels would train the model on itself.")
         self.lbl_launch.setText(msg)
         self.log(f"reloaded: {res['corrected']} corrected, "
                  f"{res.get('confirmed', 0)} confirmed, "
@@ -1084,13 +1083,13 @@ class MainWindow(QMainWindow):
             picked = [r for r in proj.recordings if r.selected] or proj.recordings
             for r in picked:
                 st = core.LabelStore(proj, r.name)
-                if st.n_human() == 0:
+                if st.n_manual() == 0:
                     continue
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 if not os.path.exists(cache):
-                    log(f"featurising {r.name} …")
+                    log(f"featurizing {r.name} …")
                 feat = core.featurize(r, cache=cache)
-                hu = st.df[st.human_mask()][["epoch", "state"]]
+                hu = st.df[st.manual_mask()][["epoch", "state"]]
                 m = feat.merge(hu, on="epoch", suffixes=("_old", ""))
                 if "state_old" in m.columns:
                     m = m.drop(columns=["state_old"])
@@ -1098,12 +1097,12 @@ class MainWindow(QMainWindow):
                 frames.append(m)
                 comp.append((r.name, st.n_corrected(), st.n_confirmed(),
                              st.n_imported()))
-                log(f"  {r.name}: {len(m)} human epochs "
+                log(f"  {r.name}: {len(m)} manual epochs "
                     f"({st.n_corrected()} corrected, {st.n_confirmed()} confirmed, "
                     f"{st.n_imported()} imported)")
             if not frames:
                 raise RuntimeError(
-                    "No human-labelled epochs found. Review some epochs first "
+                    "No manually labeled epochs found. Review some epochs first "
                     "(Review tab), or import existing manual scoring.")
             df = pd.concat(frames, ignore_index=True)
             tc = sum(c for _, c, _, _ in comp)
@@ -1113,7 +1112,7 @@ class MainWindow(QMainWindow):
                 f"{ti} imported  (total {tc + tf + ti})")
             if ti > 2 * (tc + tf) and ti:
                 log("  NOTE: imported pre-existing scoring dominates. Those are "
-                    "human labels, but they are not what you reviewed in this "
+                    "manual labels, but they are not what you reviewed in this "
                     "session, so gains mostly reflect training on that scoring.")
             if tf and not tc:
                 log("  NOTE: confirmations only, no corrections. Confirming an "

@@ -547,5 +547,5 @@
   ],
   "epoch_sec": 4.0,
   "feature_backend": "somnus.features",
-  "notes": "Features must be produced by somnus.features via somnus.data.datasets.featurize(). Missing features are set to 0 after centring, i.e. they contribute nothing."
+  "notes": "Features must be produced by somnus.features via somnus.data.datasets.featurize(). Missing features are set to 0 after centering, i.e. they contribute nothing."
 }

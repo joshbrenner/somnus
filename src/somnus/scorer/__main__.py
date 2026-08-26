@@ -95,7 +95,7 @@ class SleepReviewState:
         
         if 'Unclear' not in self.df.columns:
             self.df['Unclear'] = 0
-        # Human affirmation of the label already present. Round-trips through
+        # Manual affirmation of the label already present. Round-trips through
         # save_csv() for free, because that only drops 'State' and 'Bout_ID'.
         if 'Confirmed' not in self.df.columns:
             self.df['Confirmed'] = 0
@@ -162,7 +162,7 @@ class SleepReviewState:
 
         Confidence below the user's threshold, excluding HMM-smoothed epochs:
         the smoothing changing a label is not the model being unsure, and those
-        are already flagged by their own colour in the timeline.
+        are already flagged by their own color in the timeline.
         """
         return (self._conf < self.certainty_threshold) & ~self._sm
 
@@ -216,7 +216,7 @@ class SleepReviewState:
                 for i in range(lo, hi) if self._sm[i]]
 
     def mark_reviewed(self, t_sec):
-        """Note that a human has looked here, so it stops being queued."""
+        """Note that the user has looked here, so it stops being queued."""
         i = self._epoch_of(t_sec)
         if i is not None:
             self._reviewed[i] = True
@@ -241,7 +241,7 @@ class SleepReviewState:
         # it; searching from there would keep re-finding the same epoch whenever
         # low-certainty epochs are closer together than half a window (which they
         # usually are). Half an epoch of tolerance stops the epoch you are already
-        # centred on from matching itself.
+        # centered on from matching itself.
         if abs(self.playback_offset_sec) > 1e-9:
             anchor = self.current_time_sec + self.playback_offset_sec
         else:
@@ -333,7 +333,7 @@ class SleepReviewState:
 
         if self.active_brush == 'Confirm':
             # Affirms the label already there WITHOUT changing it. This is the
-            # only way a human can say "the model got this right", because a
+            # only way the user can say "the model got this right", because a
             # label left untouched is indistinguishable from one never looked at
             # once it has been written to a CSV -- so an unconfirmed epoch is
             # never treated as reviewed, and never becomes a training target.
@@ -535,13 +535,16 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
     emg_gain = 1.0
     eeg_offset = 0.0
     first_run = True
-    last_wall_time = time.time() # NEW: Initialize the timer
+    last_wall_time = time.time()
 
     print("\nControls:")
     print(" CLICK (Menu) : Access File, Brush, View, Mode, and Size options")
     print(" DRAG (EEG)  : Continuous 'Paint' mode (Updates CSV on mouse release)")
     print(" CLICK (EEG) : Point-A to Point-B 'Range' mode")
-    print(" 1-6         : Select Brush Tool Keyboard Shortcut (6 is Erase)")
+    print(" 1-7         : Select brush (6 = Confirm, 7 = Erase)")
+    print(" ENTER       : Save scoring to CSV")
+    print(" u / U       : Next / previous low-certainty epoch")
+    print(" [ / ]       : Lower / raise the certainty threshold")
     print(" SPACE       : Pause / Play video loop")
     print(" L/R ARROW   : Skip and center to next / previous bout boundary")
     print(" A / D       : Smooth step timeline backward / forward (scales with view)")
@@ -551,7 +554,7 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
     print(" ESC         : Quit")
 
     while True:
-        # NEW: Calculate real elapsed time, capped at 0.1s to prevent huge jumps
+        # Real elapsed time, capped at 0.1 s to prevent huge jumps
         current_wall_time = time.time()
         dt = min(current_wall_time - last_wall_time, 0.1)
         last_wall_time = current_wall_time

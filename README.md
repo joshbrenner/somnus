@@ -59,11 +59,11 @@ scratch) → **Fine-tune** (adapt the model to your corrections) → **Evaluate*
 
 Two notes: **source data is never written to**, and
 **the model never trains on its own output** — every epoch records where its
-label came from, and only human-sourced labels can become training targets.
+label came from, and only manually sourced labels can become training targets.
 
 ## Fine-tuning
 
-The performance loss on labelled epochs is minimized with a penalty that
+The performance loss on labeled epochs is minimized with a penalty that
 pulls the weights toward the existing model. We use a parameter λ,
 where "keep the shipped model" (λ→∞), and "train on my data
 alone" (λ→0). The default λ value is chosen by cross-validation on your recordings,
@@ -74,7 +74,7 @@ in fine-tuning tests on three subjects that the base model handled poorly, accur
 ## Performance
 
 Tested on held-out mice from a public multi-lab validation corpus —
-74 subjects, ~1.52 million labelled epochs — after training on 61,164 epochs
+74 subjects, ~1.52 million labeled epochs — after training on 61,164 epochs
 from six labs:
 
 | metric | value |

@@ -1,6 +1,6 @@
 """Standalone scorer for the released Somnus model -- numpy/pandas only.
 
-Given the JSON artifact and a featurised epoch table it reproduces the
+Given the JSON artifact and a featurized epoch table it reproduces the
 published predictions, with no dependency on sklearn or on how the model was
 fitted. This is the module the GUI and any batch-scoring tool should call.
 
@@ -47,7 +47,7 @@ def design_matrix(art: dict, df: pd.DataFrame) -> np.ndarray:
 
     Mirrors the training-time AvailabilityScaler: a feature that is absent (or
     non-finite, or whose guard column says its tier was unavailable in this
-    recording) is set to exactly 0 *after* centring, so it contributes nothing
+    recording) is set to exactly 0 *after* centering, so it contributes nothing
     to the logit rather than biasing it.
     """
     cols = art["columns"]
@@ -95,7 +95,7 @@ def viterbi(log_em: np.ndarray, A: np.ndarray, log_pi: np.ndarray) -> np.ndarray
 
 
 def scale_transitions(A: np.ndarray, stickiness: float = 1.0) -> np.ndarray:
-    """Raise the transition matrix to a power and renormalise rows.
+    """Raise the transition matrix to a power and renormalize rows.
 
     `stickiness` is a single knob for how hard the decode resists state changes,
     because taking A**g multiplies every transition log-cost by g:
@@ -109,7 +109,7 @@ def scale_transitions(A: np.ndarray, stickiness: float = 1.0) -> np.ndarray:
                  the first casualty).
         0<g<1    weaker inertia than the data suggests; more flicker.
 
-    Rows are renormalised, so the result is always a valid transition matrix.
+    Rows are renormalized, so the result is always a valid transition matrix.
     """
     if stickiness < 0:
         raise ValueError("stickiness must be >= 0")
@@ -120,7 +120,7 @@ def scale_transitions(A: np.ndarray, stickiness: float = 1.0) -> np.ndarray:
 
 def predict(art: dict, df: pd.DataFrame, decode: bool = True,
             stickiness: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Score a featurised recording.
+    """Score a featurized recording.
 
     Args:
         art: artifact from load_model().
@@ -178,7 +178,7 @@ def main() -> None:
                          "bouts")
     args = ap.parse_args()
 
-    # Featurising needs the dataset adapters; import lazily so that library
+    # Featurizing needs the dataset adapters; import lazily so that library
     # use of this module stays dependency-light (numpy/pandas only).
     from somnus.data import datasets as B
 
@@ -200,7 +200,7 @@ def main() -> None:
         m = df["state"].isin(art["states"]).to_numpy()
         if m.sum():
             agree = float((labels[m] == df.loc[m, "state"].to_numpy()).mean())
-            print(f"  {int(m.sum())} manually labelled epochs, "
+            print(f"  {int(m.sum())} manually labeled epochs, "
                   f"agreement = {agree:.4f}")
 
     if args.out:

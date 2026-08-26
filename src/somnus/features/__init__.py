@@ -26,7 +26,7 @@ TIERS
   3  45-63 Hz   gamma (fits inside a 128 Hz recording's Nyquist)
   4  63-150 Hz  high gamma + wideband EMG              (high-rate rigs only)
 
-Tier-1 relative powers are normalised to the TIER-1 SUM only, so their meaning is
+Tier-1 relative powers are normalized to the TIER-1 SUM only, so their meaning is
 identical no matter which higher tiers exist. Higher tiers are expressed as
 ratios to that same tier-1 total, so they are comparable too.
 
@@ -95,12 +95,12 @@ MAINS_HALFWIDTH = 1.5
 AMPLITUDE_FEATURES = ["t1_power_log", "emg_low_log", "emg_mid_log",
                       "emg_high_log", "log_velocity"]
 
-# Ratio/shape features. In principle self-normalising, but measurement shows
-# they still carry large per-recording offsets across labs (delta_rel differs by
-# ~1 SD between sources, because highpass corners range from none at all to
-# -26 dB at 0.5 Hz). z-scoring these within recording as well removes the
-# site offset while preserving the within-recording modulation that identifies
-# state. Both raw and _z versions are emitted so the two can be compared.
+# Ratio/shape features. In principle self-normalizing, but they still carry
+# large per-recording offsets across sites (delta_rel differs by ~1 SD between
+# sources, because highpass corners range from none at all to -26 dB at 0.5 Hz).
+# z-scoring these within recording as well removes the site offset while
+# preserving the within-recording modulation that identifies state. Both raw and
+# _z versions are emitted.
 RATIO_FEATURES = ([f"{b}_rel" for b in TIER1_ORDER]
                   + ["theta_delta_log", "delta_index", "emg_ratio_hi_lo"]
                   + [f"{TIER_BANDS[t][0]}_ratio_log" for t in (2, 3, 4)])
@@ -125,8 +125,8 @@ def detect_bandwidth(signal: np.ndarray, sfreq: float,
     """Effective upper edge (Hz) of genuine signal, i.e. the filter corner.
 
     EEG power falls with frequency even with no filter (1/f), so a fixed dB
-    threshold would mistake natural decay for filtering: lab_1 is ~-18 dB at
-    63 Hz yet is entirely real. What distinguishes an anti-alias/lowpass filter
+    threshold would mistake natural decay for filtering: an unfiltered
+    recording can sit ~-18 dB at 63 Hz and still be entirely real. What distinguishes an anti-alias/lowpass filter
     is a sudden *change of slope* -- a cliff.
 
     Detection: smooth the mains-suppressed spectrum, then scan upward from
@@ -134,9 +134,9 @@ def detect_bandwidth(signal: np.ndarray, sfreq: float,
     `slope_db_per_hz` and stays steep in the following window (sustained cliff),
     or where power falls below `floor_db` relative to the 8-20 Hz reference.
 
-    Calibrated against measured data: lab_3 falls ~-3.4 dB/Hz across 25-30 Hz
-    (correctly flagged, corner ~26 Hz) whereas lab_1 falls ~-0.6 dB/Hz across
-    25-40 Hz (correctly passed).
+    Calibrated against measured data: a lowpass-filtered source falls
+    ~-3.4 dB/Hz across 25-30 Hz (correctly flagged, corner ~26 Hz) whereas an
+    unfiltered one falls ~-0.6 dB/Hz across 25-40 Hz (correctly passed).
     """
     n = min(len(signal), int(max_seconds * sfreq))
     x = np.asarray(signal[:n], dtype=float)
@@ -175,9 +175,8 @@ def available_tiers(edge_hz: float) -> set[int]:
     Tier 1 (<=25 Hz) is unconditional: it is the universal baseline, and a
     recording that could not support it would be unusable for sleep scoring at
     all. This also absorbs the fact that the cliff detector fires at the *onset*
-    of a rolloff, so lab_3 measures ~24 Hz even though its 25 Hz content is
-    demonstrably as strong as every other lab's (-3.4 to -3.9 dB vs -4.1 to
-    -8.5 dB relative to 8-20 Hz).
+    of a rolloff, so a source filtered near 25 Hz measures ~24 Hz even though its
+    25 Hz content is as strong as an unfiltered source's.
     """
     return {1} | {t for t, top in TIER_TOP.items()
                   if t != 1 and top <= edge_hz + 1e-9}
@@ -185,8 +184,8 @@ def available_tiers(edge_hz: float) -> set[int]:
 
 def available_emg_bands(edge_hz: float) -> set[str]:
     """Which EMG bands a recording supports, gated by the EMG channel's own
-    bandwidth. Must be measured separately from EEG: lab_3 lowpass-filtered its
-    EEG at ~25 Hz but left its EMG intact to 64 Hz."""
+    bandwidth. Must be measured separately from EEG: a source may lowpass its
+    EEG at ~25 Hz while leaving its EMG intact to 64 Hz."""
     ok = {"emg_low"}                     # 5-25 Hz: always available
     for name, (lo, hi) in EMG_BANDS.items():
         if name == "emg_low":
@@ -380,7 +379,7 @@ def velocity_features(coords: np.ndarray | None,
 # ------------------------------------------------------------------ context
 def add_temporal_context(df: pd.DataFrame, columns: list[str],
                          windows: tuple[int, ...] = (3, 15)) -> pd.DataFrame:
-    """Centred rolling mean/std per feature: label-free temporal context.
+    """Centered rolling mean/std per feature: label-free temporal context.
 
     NaN-safe: a column that is entirely NaN (unsupported tier) yields NaN
     context, which the missing-indicator machinery then handles.
@@ -396,7 +395,7 @@ def add_temporal_context(df: pd.DataFrame, columns: list[str],
     return out
 
 
-# ------------------------------------------------------------ normalisation
+# ------------------------------------------------------------ normalization
 def zscore_within(df: pd.DataFrame, columns: list[str],
                   group_col: str = "recording",
                   suffix: str = "_z") -> pd.DataFrame:
@@ -424,9 +423,9 @@ def amplitude_columns(df: pd.DataFrame) -> list[str]:
 def zscore_target_columns(df: pd.DataFrame) -> list[str]:
     """All columns to z-score within recording: amplitude AND ratio features.
 
-    Ratio features are included because measurement showed they still carry ~1 SD
-    site offsets (differing highpass corners and montages), which a model can
-    latch onto as a site fingerprint instead of learning state.
+    Ratio features are included because they still carry ~1 SD site offsets
+    (differing highpass corners and montages), which a model can latch onto as a
+    site fingerprint instead of learning state.
     """
     roots = AMPLITUDE_FEATURES + RATIO_FEATURES
     return [c for c in df.columns
@@ -442,7 +441,7 @@ def labels_from_onehot(df: pd.DataFrame, n_epochs: int, bin_sec: float = 0.5,
                        ) -> np.ndarray:
     """Majority label per epoch from sub-epoch one-hot bins.
 
-    Epochs containing excluded or unlabelled bins, or failing the purity
+    Epochs containing excluded or unlabeled bins, or failing the purity
     threshold, become None: they are dropped from training (no label noise) but
     can still be predicted, keeping the time series contiguous.
     """

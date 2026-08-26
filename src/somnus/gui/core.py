@@ -22,20 +22,20 @@ from somnus.predict import DEFAULT_ARTIFACT
 STATES = ["Wake", "NREM", "REM"]
 EPOCH_SEC = 4.0
 
-# How a label came to be. Fine-tuning may only ever train on human-sourced rows:
+# How a label came to be. Fine-tuning may only ever train on manually sourced rows:
 # training on the model's own output is a feedback loop that raises apparent
 # confidence while adding no information.
 SRC_MODEL = "model"        # produced by the classifier
-SRC_CONFIRMED = "human_confirmed"   # a human looked and agreed
-SRC_CORRECTED = "human_corrected"   # a human changed it
-SRC_IMPORTED = "human_imported"     # from a pre-existing manual scoring file
-SRC_EXCLUDED = "human_excluded"     # human marked it Artifact/unscorable
+SRC_CONFIRMED = "manual_confirmed"   # the user looked and agreed
+SRC_CORRECTED = "manual_corrected"   # the user changed it
+SRC_IMPORTED = "manual_imported"     # from a pre-existing manual scoring file
+SRC_EXCLUDED = "manual_excluded"     # the user marked it Artifact/unscorable
 # Sources that may be used as fine-tuning targets. SRC_EXCLUDED is deliberately
-# absent: the human said the epoch is not a clean state, so it must not train the
+# absent: the user said the epoch is not a clean state, so it must not train the
 # model, but it is still recorded so the decision survives a re-score.
-HUMAN_SOURCES = (SRC_CONFIRMED, SRC_CORRECTED, SRC_IMPORTED)
+MANUAL_SOURCES = (SRC_CONFIRMED, SRC_CORRECTED, SRC_IMPORTED)
 # Sources a model write must not clobber (includes exclusions).
-PROTECTED_SOURCES = HUMAN_SOURCES + (SRC_EXCLUDED,)
+PROTECTED_SOURCES = MANUAL_SOURCES + (SRC_EXCLUDED,)
 
 
 def _now() -> str:
@@ -166,9 +166,9 @@ def discover_recordings(folder: str) -> list[Recording]:
 
 # ---------------------------------------------------------------------- labels
 # `model_state` records what the classifier predicted for this epoch, kept even
-# after a human overrides `state`. Without it there is no way to tell a real
+# after the user overrides `state`. Without it there is no way to tell a real
 # correction from a label that was edited and then put back: the row would stay
-# flagged as human-corrected, show as reviewed, and be fed to fine-tuning even
+# flagged as manually corrected, show as reviewed, and be fed to fine-tuning even
 # though it is identical to the model's own output -- which is the feedback loop
 # the provenance tracking exists to prevent.
 LABEL_COLS = ["epoch", "t_start", "state", "source", "confidence",
@@ -181,10 +181,10 @@ class LabelStore:
     One row per 4 s epoch:
         epoch, t_start, state, source, confidence, model, updated
 
-    Invariant enforced here: **a model write never overwrites a human row.**
+    Invariant enforced here: **a model write never overwrites a manual row.**
     That is the whole point of tracking `source` -- it keeps re-scoring a
     recording from silently discarding someone's manual corrections, and it lets
-    fine-tuning select human rows only.
+    fine-tuning select manual rows only.
     """
 
     def __init__(self, project: Project, recording: str):
@@ -207,12 +207,12 @@ class LabelStore:
         self.df.sort_values("epoch").to_csv(self.path, index=False)
 
     # ---- queries
-    def human_mask(self) -> np.ndarray:
+    def manual_mask(self) -> np.ndarray:
         """Rows usable as fine-tuning targets (excludes Artifact-marked epochs)."""
-        return self.df["source"].isin(HUMAN_SOURCES).to_numpy()
+        return self.df["source"].isin(MANUAL_SOURCES).to_numpy()
 
     def protected_mask(self) -> np.ndarray:
-        """Rows a model write must not overwrite (human labels AND exclusions)."""
+        """Rows a model write must not overwrite (manual labels AND exclusions)."""
         return self.df["source"].isin(PROTECTED_SOURCES).to_numpy()
 
     def n_confirmed(self) -> int:
@@ -228,10 +228,10 @@ class LabelStore:
         return int((self.df["source"] == SRC_EXCLUDED).sum())
 
     def revert_to_model(self, epoch: int) -> bool:
-        """Drop a human flag when the label matches the model again.
+        """Drop the manual flag when the label matches the model again.
 
         Used when an epoch was edited and then changed back: leaving it marked as
-        human-corrected would keep it green in the hypnogram and, worse, feed the
+        manually corrected would keep it green in the hypnogram and, worse, feed the
         model its own prediction as a training target.
         """
         row = self.df[self.df["epoch"] == epoch]
@@ -246,7 +246,7 @@ class LabelStore:
         return True
 
     def set_excluded(self, epoch: int) -> None:
-        """Mark an epoch as human-excluded (Artifact / not a clean state)."""
+        """Mark an epoch as manually excluded (Artifact / not a clean state)."""
         row = self.df[self.df["epoch"] == epoch]
         t = float(row["t_start"].iloc[0]) if len(row) else epoch * EPOCH_SEC
         model = row["model"].iloc[0] if len(row) else ""
@@ -256,8 +256,8 @@ class LabelStore:
                              model, mstate, _now()]], columns=LABEL_COLS)
         self.df = pd.concat([keep, new], ignore_index=True)
 
-    def n_human(self) -> int:
-        return int(self.human_mask().sum())
+    def n_manual(self) -> int:
+        return int(self.manual_mask().sum())
 
     def counts(self) -> dict:
         return self.df["state"].value_counts().to_dict()
@@ -266,7 +266,7 @@ class LabelStore:
     def set_model_labels(self, epochs: np.ndarray, t_start: np.ndarray,
                          states: np.ndarray, confidence: np.ndarray,
                          model: str) -> int:
-        """Write model predictions, leaving every human-sourced row untouched.
+        """Write model predictions, leaving every manually sourced row untouched.
 
         Returns the number of epochs actually written.
         """
@@ -291,9 +291,9 @@ class LabelStore:
                    .drop_duplicates("epoch", keep="last"))
         return len(new)
 
-    def set_human_label(self, epoch: int, state: str,
-                        corrected: bool | None = None) -> None:
-        """Record a human decision for one epoch.
+    def set_manual_label(self, epoch: int, state: str,
+                         corrected: bool | None = None) -> None:
+        """Record the user's decision for one epoch.
 
         `corrected=None` infers it: same as the current label -> confirmed,
         different -> corrected.
@@ -317,7 +317,7 @@ class LabelStore:
         self.df = pd.concat([keep, new], ignore_index=True)
 
     def import_manual(self, scored_csv: str, n_epochs: int) -> int:
-        """Import a pre-existing one-hot _scored.csv as human labels.
+        """Import a pre-existing one-hot _scored.csv as manual labels.
 
         The source file is read only. Its 0.5 s bins are collapsed onto 4 s
         epochs, and an epoch is only accepted if every bin inside it agrees and
@@ -385,7 +385,7 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
         epoch is genuinely ambiguous to the model.
       * decode override -- the smoothed label disagrees with the raw per-epoch
         argmax, i.e. the HMM overruled the evidence. These are exactly where
-        smoothing may have erased a real short bout, so they deserve a human
+        smoothing may have erased a real short bout, so they deserve a manual
         even when the model looks confident.
     """
     p = np.sort(proba, axis=1)
@@ -397,12 +397,12 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
 
 
 def review_queue(proba: np.ndarray, labels: np.ndarray, raw: np.ndarray,
-                 human: np.ndarray | None = None,
+                 manual: np.ndarray | None = None,
                  top: int | None = None) -> np.ndarray:
     """Epoch indices ordered by review priority, already-reviewed ones dropped."""
     u = uncertainty(proba, labels, raw)
-    if human is not None:
-        u = np.where(human, -1.0, u)
+    if manual is not None:
+        u = np.where(manual, -1.0, u)
     order = np.argsort(-u)
     order = order[u[order] >= 0]
     return order if top is None else order[:top]
@@ -410,7 +410,7 @@ def review_queue(proba: np.ndarray, labels: np.ndarray, raw: np.ndarray,
 
 # ----------------------------------------------------- hand-off to the scorer UI
 def smooth_trace(x: np.ndarray, window: int = 15) -> np.ndarray:
-    """Centred rolling median, for displaying a readable confidence trace.
+    """Centered rolling median, for displaying a readable confidence trace.
 
     A per-epoch confidence trace on a multi-hour recording is mostly vertical
     hash; a ~1 min median keeps the shape while making it legible. Display only --
@@ -484,16 +484,16 @@ def write_viewer_bundle(project: "Project", recording: Recording,
       the source folder would modify original data.
     * meta_csv -- per-epoch `uncertainty` and `hmm_smoothed`, which the UI uses
       for the certainty readout, the jump-to-most-uncertain control and the
-      distinct colour for smoothed epochs. Optional: without it the UI still runs.
+      distinct color for smoothed epochs. Optional: without it the UI still runs.
     """
     project.ensure_dirs()
     n_ep = len(labels)
     per = max(1, int(round(EPOCH_SEC / bin_sec)))
 
-    # merge in any human labels already recorded, so the UI opens on the latest
+    # merge in any manual labels already recorded, so the UI opens on the latest
     lab = np.array(labels, dtype=object)
     if len(store.df):
-        h = store.df[store.human_mask()]
+        h = store.df[store.manual_mask()]
         for e, s in zip(h["epoch"].to_numpy(), h["state"].to_numpy()):
             if 0 <= int(e) < n_ep:
                 lab[int(e)] = s
@@ -523,21 +523,21 @@ def write_viewer_bundle(project: "Project", recording: Recording,
     scored_path = os.path.join(project.labels_dir, f"{recording.name}_scored.csv")
     scored.to_csv(scored_path, index=False)
 
-    human = np.zeros(n_ep, dtype=int)
+    manual = np.zeros(n_ep, dtype=int)
     if len(store.df):
-        h = store.df.loc[store.human_mask(), "epoch"].to_numpy()
+        h = store.df.loc[store.manual_mask(), "epoch"].to_numpy()
         h = h[(h >= 0) & (h < n_ep)]
-        human[h.astype(int)] = 1
+        manual[h.astype(int)] = 1
     meta = pd.DataFrame({
         "epoch": np.arange(n_ep),
         "t_start": np.arange(n_ep) * EPOCH_SEC,
         # margin only: an epoch changed by the decode is NOT treated as
-        # uncertain, it gets its own colour instead, so the jump
+        # uncertain, it gets its own color instead, so the jump
         # control targets genuine model ambiguity rather than smoothing edits
         "uncertainty": uncertainty(proba),
         "confidence": proba.max(axis=1),
         "hmm_smoothed": (np.asarray(labels) != np.asarray(raw)).astype(int),
-        "reviewed": human,
+        "reviewed": manual,
     })
     # per-state probabilities, so the scorer can show the model's belief averaged
     # over whatever window is on screen
@@ -555,9 +555,9 @@ def read_viewer_labels(project: "Project", recording: Recording,
 
     Returns {'corrected': n, 'confirmed': n, 'excluded': n, 'reverted': n}.
 
-    **Only epochs whose label CHANGED are recorded as human.** The CSV handed to
+    **Only epochs whose label CHANGED are recorded as manual.** The CSV handed to
     the scorer is pre-filled with the model's own predictions, so an untouched
-    epoch comes back identical. Treating those as "human confirmed" would convert
+    epoch comes back identical. Treating those as "manually confirmed" would convert
     the model's entire output into training targets -- a feedback loop that
     inflates apparent confidence while adding no information, and precisely what
     the `source` column exists to prevent. A genuine "I looked and agreed" is
@@ -565,7 +565,7 @@ def read_viewer_labels(project: "Project", recording: Recording,
     conservative reading is the only safe one. (Confirmations can still be
     recorded explicitly elsewhere; they are simply not inferred from a round-trip.)
 
-    Epochs painted Artifact or Unclear are recorded as `human_excluded`: the user
+    Epochs painted Artifact or Unclear are recorded as `manual_excluded`: the user
     is saying "this is not a clean state", so the epoch must be kept OUT of
     fine-tuning even if it previously carried a valid label.
     """
@@ -603,22 +603,22 @@ def read_viewer_labels(project: "Project", recording: Recording,
         if hit[0] == cur_state:
             if confirmed:
                 if cur_src != SRC_CONFIRMED:
-                    store.set_human_label(e, hit[0], corrected=False)
+                    store.set_manual_label(e, hit[0], corrected=False)
                     n_con += 1
                 continue
-            # Not confirmed and unchanged. If the row is flagged human but now
-            # equals the model's own prediction, the human edited it and then put
+            # Not confirmed and unchanged. If the row is flagged manual but now
+            # equals the model's own prediction, the user edited it and then put
             # it back -- drop the flag, else it stays green in the hypnogram and
             # gets fed to fine-tuning as the model's own output.
-            if cur_src in HUMAN_SOURCES and store.revert_to_model(e):
+            if cur_src in MANUAL_SOURCES and store.revert_to_model(e):
                 n_rev += 1
             continue
 
-        store.set_human_label(e, hit[0], corrected=True)
+        store.set_manual_label(e, hit[0], corrected=True)
         # A "correction" back to exactly what the model said is not a correction,
-        # UNLESS the human explicitly confirmed it with the Confirm brush.
+        # UNLESS the user explicitly confirmed it with the Confirm brush.
         if confirmed:
-            store.set_human_label(e, hit[0], corrected=False)
+            store.set_manual_label(e, hit[0], corrected=False)
             n_con += 1
         elif store.revert_to_model(e):
             n_rev += 1
@@ -630,7 +630,7 @@ def read_viewer_labels(project: "Project", recording: Recording,
 
 # ------------------------------------------------------------------- QC checks
 def qc_flags(labels: np.ndarray, epoch_sec: float = EPOCH_SEC) -> list[dict]:
-    """Physiologically suspicious patterns worth a human glance.
+    """Physiologically suspicious patterns worth a manual review.
 
     These are hints, not errors: a flag means 'unusual', and unusual is exactly
     what a disease model may legitimately produce. They are never auto-corrected.

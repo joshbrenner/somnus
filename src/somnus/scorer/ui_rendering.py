@@ -21,7 +21,7 @@ COLORS = {
 }
 
 # States you can navigate between (Artifact/Unclear/Unknown are brushes, not
-# navigable states, so they no longer get jump buttons).
+# navigable states, so they get no jump buttons).
 NAV_LABELS = ['Wake', 'NREM', 'REM']
 
 MENU_HEADERS = {
@@ -66,7 +66,7 @@ def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
 
     Replaces the old spectral-index panel (Delta Idx / Log(T/D) / Abs. EMG):
     those numbers duplicated what the model already consumes, whereas the useful
-    thing while relabelling is what the model *thinks* and how sure it is.
+    thing while relabeling is what the model *thinks* and how sure it is.
 
     Shows the mean probability of each state over the visible window, the mean
     confidence, and how many visible epochs fall below the certainty threshold.
@@ -151,8 +151,8 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
         x2 = int(((bin_start + state.bin_step - window_start_sec) / window_duration) * w)
 
         color = COLORS.get(bin_state, (50, 50, 50))
-        # Human-affirmed bins are drawn in a second, more opaque pass: same
-        # colour so the state still reads at a glance, stronger so it is obvious
+        # Manually affirmed bins are drawn in a second, more opaque pass: same
+        # color so the state still reads at a glance, stronger so it is obvious
         # which stretches have been checked.
         if row.get('Confirmed', 0):
             confirmed_spans.append((x1, x2, color))
@@ -169,7 +169,7 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
 
     # Mark epochs the HMM smoothing changed, as a hatch along the top edge. Drawn
     # after the blend so it stays legible, and kept thin so it annotates the
-    # state colour rather than replacing it.
+    # state color rather than replacing it.
     if getattr(state, 'review_meta', None) is not None:
         for t0, t1 in state.smoothed_spans(window_start_sec, end_time_sec):
             x1 = int(((t0 - window_start_sec) / window_duration) * w)
@@ -338,7 +338,7 @@ def draw_sidebar(state, h, w_side):
             # the threshold. Temporal order, not most-uncertain-first, so review
             # follows the recording. HMM-smoothed epochs are skipped: smoothing
             # changing a label is not the model being unsure, and they are
-            # already flagged by their own colour.
+            # already flagged by their own color.
             bx1, bx2 = 10, w_side - 10
             by1, by2 = y, y + 34
             state.uncertain_btn = (bx1, by1, bx2, by2)
