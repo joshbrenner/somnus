@@ -52,9 +52,9 @@ Relabeling happens in the scorer (see below).
 Both export to CSV.
 
 **Fine-tune** — trains on manual labels only, from the ticked recordings.
-λ is either fixed or chosen by cross-validation. Reports held-out before/after
-and a forgetting check, and only offers to activate the new model if it actually
-beat the base model out of sample. Each run writes a new
+λ is either fixed or chosen by cross-validation. Reports held-out before/after,
+and only offers to activate the new model if it actually beat the base model out
+of sample. Each run writes a new
 `models/finetuned_NN.json` so earlier models stay comparable in the Evaluate tab.
 
 ## The scorer hand-off

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 
 import numpy as np
 import pandas as pd
@@ -299,49 +298,6 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
                 lam=lam, curve=curve, improved=improved)
 
 
-def forgetting_check(art_base: dict, art_new: dict, base_csv: str,
-                     verbose: bool = True) -> dict | None:
-    """Check whether adapting the model has cost it its general ability.
-
-    Scores a reference set with the old model and the new one. A model that now
-    fits your animals but has forgotten everything else should be visible,
-    not a surprise later.
-    """
-    if not os.path.exists(base_csv):
-        if verbose:
-            print(f"\nforgetting check skipped (no {base_csv})")
-        return None
-    df = pd.read_csv(base_csv)
-    states = art_base["states"]
-    df = df[df["state"].isin(states)].reset_index(drop=True)
-    X = design_matrix(art_base, df)
-    y = df["state"].map({s: i for i, s in enumerate(states)}).to_numpy()
-    groups = df["recording"].to_numpy() if "recording" in df.columns \
-        else np.zeros(len(df))
-    out = {}
-    for tag, a in (("base", art_base), ("tuned", art_new)):
-        W = np.asarray(a["coef"], float)
-        b = np.asarray(a["intercept"], float)
-        o = [a["classes"].index(s) for s in states]
-        yp = _decode(a, X, W[o], b[o], np.asarray(a["transition_matrix"], float),
-                     groups)
-        out[tag] = _metrics(y, yp, len(states))
-    if verbose:
-        print(f"\nforgetting check on the base training set ({len(X)} epochs):")
-        print(f"  base  acc={out['base']['accuracy']:.4f} "
-              f"bal={out['base']['balanced_accuracy']:.4f}   <- IN-SAMPLE, flattered")
-        print(f"  tuned acc={out['tuned']['accuracy']:.4f} "
-              f"bal={out['tuned']['balanced_accuracy']:.4f}  "
-              f"({out['tuned']['accuracy'] - out['base']['accuracy']:+.4f} acc)")
-        print("  Read the gap as an UPPER BOUND on forgetting: these are the base "
-              "model's own\n  training epochs, so it is scored in-sample while the "
-              "fine-tuned model is not.\n  Use it to catch catastrophic drift, not "
-              "to quantify a small loss.")
-    out["caveat"] = ("base model is scored in-sample on its own training data, so "
-                     "the base-vs-tuned gap overstates forgetting")
-    return out
-
-
 def main() -> None:
     """Fine-tune a model from the command line."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -357,9 +313,6 @@ def main() -> None:
     ap.add_argument("--no-adapt-transitions", action="store_true")
     ap.add_argument("--no-cv", action="store_true",
                     help="with --lam, skip the sweep")
-    ap.add_argument("--base-csv", default=None,
-                    help="a reference feature table to run the forgetting "
-                         "check against (skipped if omitted)")
     args = ap.parse_args()
 
     art = load_model(args.model)
@@ -367,11 +320,6 @@ def main() -> None:
     res = finetune(art, df, lam=args.lam, kappa=args.kappa,
                    adapt_A=not args.no_adapt_transitions,
                    lam_grid=(args.lam,) if (args.lam and args.no_cv) else LAM_GRID)
-    # The base model's training matrix is not distributed, so the forgetting
-    # check runs only when the user points --base-csv at a reference set.
-    if args.base_csv:
-        forgetting_check(art, res["artifact"], args.base_csv)
-
     if args.out:
         with open(args.out, "w") as fh:
             json.dump(res["artifact"], fh, indent=2)
