@@ -1,40 +1,34 @@
-"""Assemble the cross-dataset training set, and provide a test-set iterator.
+"""Load one recording and turn it into the per-epoch feature table.
 
-DESIGN
-------
-Training set = ALL usable recordings from the local corpus + a lab-stratified
-sample from the public BIDS corpus, matched PER LAB: the local corpus is
-treated as one lab among many, and every lab (each public lab, and the local
-one) contributes the same per-state share -- the share being what the local
-corpus has labelled. With N public labs the training set therefore holds
-(N+1) x local_count epochs of each state, so no single lab dominates any
-class, and minority states (REM) get N+1 times the epochs a corpus-level
-match would allow. Natural state proportions are preserved (Wake >> REM); the
-classifier handles that with balanced class weights rather than by discarding
-data. `--rem-per-lab` can raise the REM share beyond what the local corpus
-supplies, for feeding the minority class from REM-rich public labs.
+`featurize()` is the entry point: give it an EDF (plus, optionally, a scoring
+file and video tracking) and it returns the table `somnus.predict.predict()`
+consumes. Bandwidth is measured from the data itself -- separately for EEG and
+EMG -- and tiers the recording cannot support are emitted as NaN with their
+availability indicator set to 0, so one model scores recordings of very
+different quality without retraining.
 
-Public labs start from ONE MOUSE PER LAB (recruiting more only to fill the
-share), so training sees every filtering regime and mains condition in the
-corpus -- including a lab whose EEG is lowpass-filtered at ~25 Hz and
-therefore exercises the missing-tier path.
+An `entry` is a plain dict:
 
-Every remaining public-corpus subject is reserved for test. Test features are never
-materialised into one giant table: `iter_test_recordings()` yields one recording
-at a time so evaluation streams (the full corpus would otherwise be ~10 GB).
+    {"recording": "myrec",            # name used in the output table
+     "edf":       "path/to/myrec.edf",
+     "dataset":   "user",             # "user" | "bids"
+     "group":     "user",             # free-form grouping label
+     "subject":   "m1",
+     "scored":    None,               # optional one-hot scoring CSV
+     "pkl":       None}               # optional video tracking coordinates
 
-All source data is opened READ-ONLY.
+For `dataset="user"` the first up-to-three EDF channels are treated as EEG and
+the last as EMG. For `dataset="bids"` add `"channels"` (a BIDS `channels.tsv`,
+used to identify EEG/EMG) and optionally `"events"` (a stage-scored
+`events.tsv`).
 
-Usage:
-    python -m somnus.data.datasets                 # build training set
-    python -m somnus.data.datasets --seed 1        # different draw
+Labels are OPTIONAL throughout: scoring an unlabelled recording is the normal
+case. All source data is opened READ-ONLY.
 """
 from __future__ import annotations
 
-import argparse
 import csv
 import glob
-import json
 import os
 import pickle
 import sys
@@ -44,47 +38,14 @@ import numpy as np
 import pandas as pd
 import mne
 
-# ---- feature backend -------------------------------------------------------
-# The shipped implementation is the openseize port (`openseize_backend`), which
-# is what the released model must be trained with. `scipy_backend` is the
-# original scipy implementation, kept as a cross-check: the two are verified
-# numerically identical by `tools/verify_openseize_port.py`, so either
-# reproduces the same model. Override with SOMNUS_FEATURE_BACKEND=scipy|openseize.
-from somnus.features import get_backend
-
-H = get_backend()
-FEATURE_BACKEND = H.__name__
+# Feature computation: band definitions, harmonisation tiers, PSD.
+from somnus import features as H
 
 mne.set_log_level("ERROR")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-# Training matrices and manifests live in a training_data/ folder so there is
-# exactly one canonical copy. Resolution order: SOMNUS_DATA_DIR, the repository
-# checkout's training_data/ (when running from a git clone), else the current
-# working directory (for installed-package use).
-_REPO_DATA = os.path.abspath(os.path.join(HERE, "..", "..", "..",
-                                          "training_data"))
-DATA_DIR = os.environ.get("SOMNUS_DATA_DIR") or \
-    (_REPO_DATA if os.path.isdir(_REPO_DATA) else os.getcwd())
-
-# Source-recording locations for the two training corpora. Deliberately no
-# built-in defaults: point these at your local copies to reproduce training.
-#   SOMNUS_LOCAL_DIR -> flat folder of EDFs with <base>_scored.csv one-hot
-#                       scoring and optional tracking (+ timestamps) files
-#   SOMNUS_BIDS_DIR  -> a BIDS-layout corpus with *_events.tsv stage scoring
-# When unset, discover_local()/discover_bids() simply return no recordings.
-LOCAL_DIR = os.environ.get("SOMNUS_LOCAL_DIR", "")
-BIDS_DIR = os.environ.get("SOMNUS_BIDS_DIR", "")
-
-# Subjects to exclude from either corpus (comma-separated env vars), e.g. for
-# recordings known to be corrupted or modified.
-EXCLUDE_LOCAL_SUBJECTS = set(filter(None, os.environ.get(
-    "SOMNUS_EXCLUDE_LOCAL", "").split(",")))
-EXCLUDE_BIDS_SUBJECTS = set(filter(None, os.environ.get(
-    "SOMNUS_EXCLUDE_BIDS", "").split(",")))
 BIDS_STAGE_MAP = {"1": "Wake", "2": "NREM", "3": "REM"}  # 4 = Artifact -> None
 STATES = ["Wake", "NREM", "REM"]
+
 
 # ---- model feature layout ---------------------------------------------------
 # NOTE: `delta_index` is deliberately NOT a model input. By construction
@@ -196,60 +157,13 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
     best, best_snr = eeg_idx[0], -np.inf
     for i in eeg_idx:
         x = raw.get_data(picks=[i], start=0, stop=stop)[0]
-        # route through the active feature backend so the whole pipeline uses
-        # one PSD implementation (scipy or openseize) rather than mixing them
+        # route through the feature module so the whole pipeline shares one
+        # PSD implementation
         f, p = H._welch(x, sfreq, int(2 * sfreq))
         snr = p[(f >= 0.5) & (f <= 30)].sum() / (p[f > 30].sum() + 1e-12)
         if snr > best_snr:
             best, best_snr = i, snr
     return best
-
-
-# ------------------------------------------------------------------ discovery
-def discover_local() -> list[dict]:
-    out = []
-    if not LOCAL_DIR or not os.path.isdir(LOCAL_DIR):
-        return out
-    for edf in sorted(glob.glob(os.path.join(LOCAL_DIR, "*.edf"))):
-        base = os.path.basename(edf)[:-4]
-        mouse = base.split("_")[0]
-        if mouse in EXCLUDE_LOCAL_SUBJECTS:
-            continue
-        scored = os.path.join(LOCAL_DIR, base + "_scored.csv")
-        if not os.path.exists(scored):
-            alt = os.path.join(LOCAL_DIR, base + "_scored_man.csv")
-            if not os.path.exists(alt):
-                continue
-            scored = alt
-        pkl = sorted(glob.glob(os.path.join(LOCAL_DIR, base + "*_coordinates.pkl")))
-        out.append({"dataset": "local", "recording": base, "subject": mouse,
-                    "group": "local", "edf": edf, "scored": scored,
-                    "pkl": pkl[0] if pkl else None})
-    return out
-
-
-def discover_bids() -> list[dict]:
-    labs = {}
-    if not BIDS_DIR or not os.path.isdir(BIDS_DIR):
-        return []
-    with open(os.path.join(BIDS_DIR, "participants.tsv")) as fh:
-        for row in csv.DictReader(fh, delimiter="\t"):
-            labs[row["participant_id"]] = row.get("lab", "?")
-    out = []
-    for edf in sorted(glob.glob(os.path.join(BIDS_DIR, "sub-*/eeg/*_eeg.edf"))):
-        b = os.path.basename(edf)
-        subject = b.split("_")[0]
-        if subject in EXCLUDE_BIDS_SUBJECTS:
-            continue
-        events = edf.replace("_eeg.edf", "_events.tsv")
-        chans = glob.glob(os.path.join(os.path.dirname(edf), "*_channels.tsv"))
-        if not os.path.exists(events) or not chans:
-            continue
-        run = next((p for p in b.split("_") if p.startswith("run-")), "run-1")
-        out.append({"dataset": "bids", "recording": f"{subject}_{run}",
-                    "subject": subject, "group": labs.get(subject, "?"),
-                    "edf": edf, "events": events, "channels": chans[0]})
-    return out
 
 
 # ------------------------------------------------------------- featurisation
@@ -263,7 +177,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
     sfreq = float(raw.info["sfreq"])
     names = raw.ch_names
 
-    if entry["dataset"] in ("local", "user"):   # same on-disk format
+    if entry["dataset"] != "bids":       # plain EDF: EEG first, EMG last
         eeg_idx = list(range(min(3, len(names))))
         emg_i = len(names) - 1
     else:
@@ -290,7 +204,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
     df = pd.concat([H.eeg_features(eeg, sfreq, n_ep, tiers),
                     H.emg_features(emg, sfreq, n_ep, emg_bands)], axis=1)
 
-    # --- velocity (only the local corpus has video/tracking) ---
+    # --- velocity (only if the recording has video tracking) ---
     vel_src = "none"
     if entry.get("pkl"):
         coords, meta = load_coordinates(entry["pkl"])
@@ -308,7 +222,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0) -> pd.DataFrame:
     # all-None state column rather than an error.
     if not entry.get("scored") and not entry.get("events"):
         labels = np.full(n_ep, None, dtype=object)
-    elif entry["dataset"] in ("local", "user"):   # same on-disk format
+    elif entry["dataset"] != "bids":     # one-hot scoring CSV
         labels = H.labels_from_onehot(pd.read_csv(entry["scored"]), n_ep)
     else:
         ev = pd.read_csv(entry["events"], sep="\t")
@@ -379,215 +293,3 @@ def model_columns(df: pd.DataFrame, zscored: bool = False) -> list[str]:
     return [c for c in wanted if c in df.columns]
 
 
-# --------------------------------------------------------------- assembly
-def build_training(seed: int = 0, rem_per_lab: int | None = None,
-                   local_only: bool = False,
-                   only_labs: list[str] | None = None,
-                   mice_per_lab: int | None = None) -> None:
-    rng = np.random.RandomState(seed)
-
-    local = discover_local()
-    print(f"Local recordings: {len(local)}")
-    local_tables, metas = [], []
-    for e in local:
-        df = featurize(e)
-        metas.append(df.attrs["meta"])
-        local_tables.append(df)
-        m = df.attrs["meta"]
-        print(f"  {m['recording']}: tiers={m['tiers']} emg={m['emg_bands']} "
-              f"video={m['velocity_source']}")
-    local_all = pd.concat(local_tables, ignore_index=True)
-    local_lab = local_all[local_all["state"].notna()]
-    target = {s: int((local_lab["state"] == s).sum()) for s in STATES}
-    print(f"\nLocal labelled epochs (the per-lab share): {target}")
-
-    # ---- lab-stratified public-corpus training pool ----
-    # The local corpus counts as one lab; EVERY lab contributes the same
-    # per-state share (what the local corpus has labelled), so with N public
-    # labs the training set holds (N+1) x share epochs of each state. Labs
-    # whose recordings are too short to cover the share recruit additional
-    # mice from the SAME lab until it is met. Every recruited mouse is then
-    # excluded from the test set.
-    on = discover_bids()
-    by_lab: dict[str, list[str]] = {}
-    for e in on:
-        by_lab.setdefault(e["group"], []).append(e["subject"])
-    labs_sorted = sorted(by_lab)
-    if only_labs:
-        missing = [l for l in only_labs if l not in by_lab]
-        if missing:
-            raise SystemExit(f"unknown lab(s) {missing}; have {labs_sorted}")
-        labs_sorted = [l for l in labs_sorted if l in only_labs]
-    per_lab_target = dict(target)
-    if local_only:
-        # Public corpus contributes nothing to training; every public subject
-        # therefore lands in the test set.
-        per_lab_target = {s: 0 for s in STATES}
-        labs_sorted = []
-    if rem_per_lab is not None:
-        per_lab_target["REM"] = int(rem_per_lab)
-    print(f"\nPer-lab share target (each of {len(labs_sorted)} public labs): "
-          f"{per_lab_target}")
-
-    train_subjects: list[str] = []
-    picks: list[pd.DataFrame] = []
-    leftovers: list[pd.DataFrame] = []          # unused epochs, for top-up
-    lab_report = {}
-
-    # With a mouse cap, split the lab's share evenly across the capped mice so
-    # every animal genuinely contributes (a long recording would otherwise
-    # fill the whole share alone). Any per-mouse shortfall is recovered from
-    # the same mice's leftovers in the reconciliation step below.
-    per_mouse = ({s: int(np.ceil(per_lab_target[s] / mice_per_lab))
-                  for s in STATES} if mice_per_lab else None)
-
-    for lab in labs_sorted:
-        subs = sorted(set(by_lab[lab]))
-        order = list(rng.permutation(subs))
-        got = {s: 0 for s in STATES}
-        used = []
-        for sub in order:
-            if mice_per_lab and len(used) >= mice_per_lab:
-                break
-            if not mice_per_lab and \
-                    all(got[s] >= per_lab_target[s] for s in STATES):
-                break
-            sub_tables = []
-            for e in [x for x in on if x["subject"] == sub]:
-                df = featurize(e)
-                metas.append(df.attrs["meta"])
-                sub_tables.append(df)
-                m = df.attrs["meta"]
-                print(f"  {m['recording']} ({m['group']}): tiers={m['tiers']} "
-                      f"emg={m['emg_bands']} eeg_edge={m['eeg_edge_hz']}Hz")
-            if not sub_tables:
-                continue
-            sdf = pd.concat(sub_tables, ignore_index=True)
-            sdf = sdf[sdf["state"].notna()]
-            used.append(str(sub))
-            train_subjects.append(str(sub))
-            for s in STATES:
-                need = per_lab_target[s] - got[s]
-                if per_mouse:
-                    need = min(need, per_mouse[s])
-                pool = sdf[sdf["state"] == s]
-                if len(pool) == 0:
-                    continue
-                take = int(min(max(need, 0), len(pool)))
-                sel = rng.choice(len(pool), take, replace=False) if take else []
-                if take:
-                    picks.append(pool.iloc[sel])
-                    got[s] += take
-                rest = pool.drop(pool.index[sel]) if take else pool
-                if len(rest):
-                    leftovers.append(rest)
-        lab_report[lab] = {"mice_used": used, "drawn": got}
-        short = {s: per_lab_target[s] - got[s] for s in STATES
-                 if got[s] < per_lab_target[s]}
-        msg = f"  [{lab}] mice={used} drawn={got}"
-        if short:
-            msg += f"  STILL SHORT {short} (lab exhausted)"
-        print(msg)
-
-    # Empty fallback keeps local_lab's columns so the selection below works.
-    on_matched = (pd.concat(picks, ignore_index=True) if picks
-                  else local_lab.iloc[0:0])
-
-    # ---- exact-target reconciliation ----
-    # The public-corpus total per state is per_lab_target x n_labs. A lab that
-    # ran out of epochs is topped up from other labs' unused epochs, trading a
-    # little lab-balance for the class count.
-    public_target = {s: per_lab_target[s] * len(labs_sorted) for s in STATES}
-    spare = pd.concat(leftovers, ignore_index=True) if leftovers else pd.DataFrame()
-    final = []
-    for s in STATES:
-        cur = on_matched[on_matched["state"] == s]
-        need = public_target[s] - len(cur)
-        if need > 0 and len(spare):
-            pool = spare[spare["state"] == s]
-            take = int(min(need, len(pool)))
-            if take:
-                cur = pd.concat([cur, pool.iloc[rng.choice(len(pool), take,
-                                                           replace=False)]])
-                print(f"  topped up {s} with {take} epochs from already-used mice")
-        if len(cur) > public_target[s]:
-            cur = cur.iloc[rng.choice(len(cur), public_target[s], replace=False)]
-        if len(cur) < public_target[s]:
-            print(f"  WARNING: {s} still short "
-                  f"({len(cur)}/{public_target[s]}) after exhausting the pool")
-        final.append(cur)
-        print(f"  matched {s}: {len(cur)}/{public_target[s]} "
-              f"from {cur['subject'].nunique()} mice")
-    on_matched = pd.concat(final, ignore_index=True)
-
-    train = pd.concat([local_lab, on_matched], ignore_index=True)
-    out_csv = os.path.join(DATA_DIR, f"train_generalized_seed{seed}.csv.gz")
-    train.to_csv(out_csv, index=False, compression="gzip")
-
-    # Every mouse opened for training is excluded from the test set, including
-    # those recruited only to top a lab up.
-    test_subjects = sorted({e["subject"] for e in on
-                            if e["subject"] not in set(train_subjects)})
-    manifest = {
-        "seed": seed,
-        "matching": "per-lab: local corpus counts as one lab; every lab "
-                    "contributes the same per-state share",
-        "local_recordings": [e["recording"] for e in local],
-        "bids_train_subjects": sorted(set(train_subjects)),
-        "bids_test_subjects": test_subjects,
-        "n_bids_test_subjects": len(test_subjects),
-        "per_lab_share_target": per_lab_target,
-        "public_target": public_target,
-        "per_lab_report": lab_report,
-        "local_share": target,
-        "train_counts_by_dataset": {
-            d: {s: int(((train["dataset"] == d) & (train["state"] == s)).sum())
-                for s in STATES} for d in ("local", "bids")},
-        "model_columns": model_columns(train),
-        "recording_meta": metas,
-    }
-    with open(os.path.join(DATA_DIR, f"manifest_generalized_seed{seed}.json"), "w") as fh:
-        json.dump(manifest, fh, indent=2)
-
-    print(f"\nTraining set: {len(train)} epochs -> {out_csv}")
-    print(pd.crosstab(train["dataset"], train["state"]).to_string())
-    print(f"Model feature columns: {len(manifest['model_columns'])}")
-    print(f"Held-out test subjects: {len(test_subjects)}")
-
-
-def iter_test_recordings(train_subjects: set[str]):
-    """Yield (meta, featurized DataFrame) for each held-out public-corpus recording.
-
-    Streams so the full test corpus never has to be held in memory at once.
-    """
-    for e in discover_bids():
-        if e["subject"] in train_subjects:
-            continue
-        df = featurize(e)
-        yield df.attrs["meta"], df
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Build the cross-dataset training set.")
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--rem-per-lab", type=int, default=None,
-                    help="REM epochs each lab contributes (default: as many "
-                         "as the local corpus has labelled)")
-    ap.add_argument("--local-only", action="store_true",
-                    help="train on the local corpus alone; the entire public "
-                         "corpus becomes the test set")
-    ap.add_argument("--labs", default=None,
-                    help="comma-separated public labs to draw from "
-                         "(default: all)")
-    ap.add_argument("--mice-per-lab", type=int, default=None,
-                    help="cap on mice per public lab; the lab share is split "
-                         "evenly across them")
-    args = ap.parse_args()
-    build_training(args.seed, rem_per_lab=args.rem_per_lab,
-                   local_only=args.local_only,
-                   only_labs=args.labs.split(",") if args.labs else None,
-                   mice_per_lab=args.mice_per_lab)
-
-
-if __name__ == "__main__":
-    main()

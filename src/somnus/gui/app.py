@@ -1125,10 +1125,6 @@ class MainWindow(QMainWindow):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 res = F.finetune(art, df, lam=lam, adapt_A=adapt, verbose=True)
-                from somnus.data.datasets import DATA_DIR
-                F.forgetting_check(art, res["artifact"],
-                                   os.path.join(DATA_DIR,
-                                                "train_generalized_seed0.csv.gz"))
             log(buf.getvalue())
             n_existing = len([f for f in os.listdir(proj.models_dir)
                               if f.startswith("finetuned") and f.endswith(".json")])

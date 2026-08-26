@@ -24,7 +24,8 @@ keywords = [
     "sleep", "eeg", "emg", "polysomnography", "sleep-scoring",
     "mouse", "hmm", "machine-learning",
 ]
-requires-python = ">=3.10"
+# openseize 1.3 requires 3.12+, and the feature pipeline requires openseize.
+requires-python = ">=3.12"
 # Floors are set a little below the versions the release was developed and
 # verified against (see docs/DEVELOPMENT.md for the exact environment).
 dependencies = [

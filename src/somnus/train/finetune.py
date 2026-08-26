@@ -384,9 +384,8 @@ def main() -> None:
     ap.add_argument("--no-cv", action="store_true",
                     help="with --lam, skip the sweep")
     ap.add_argument("--base-csv", default=None,
-                    help="base training matrix, for the forgetting check "
-                         "(default: train_generalized_seed0.csv.gz in the "
-                         "somnus data directory)")
+                    help="a reference feature table to run the forgetting "
+                         "check against (skipped if omitted)")
     args = ap.parse_args()
 
     art = load_model(args.model)
@@ -394,11 +393,10 @@ def main() -> None:
     res = finetune(art, df, lam=args.lam, kappa=args.kappa,
                    adapt_A=not args.no_adapt_transitions,
                    lam_grid=(args.lam,) if (args.lam and args.no_cv) else LAM_GRID)
-    base_csv = args.base_csv
-    if base_csv is None:
-        from somnus.data.datasets import DATA_DIR
-        base_csv = os.path.join(DATA_DIR, "train_generalized_seed0.csv.gz")
-    forgetting_check(art, res["artifact"], base_csv)
+    # The base model's training matrix is not distributed, so the forgetting
+    # check runs only when the user points --base-csv at a reference set.
+    if args.base_csv:
+        forgetting_check(art, res["artifact"], args.base_csv)
 
     if args.out:
         with open(args.out, "w") as fh:

@@ -1,32 +1,27 @@
 """Standalone scorer for the released Somnus model -- numpy/pandas only.
 
-Unlike `somnus.train.export`, this module imports nothing from the training
-code: given the JSON artifact and a featurised epoch table, it reproduces the
-published predictions. This is the module the GUI and any batch-scoring tool
-should call.
+Given the JSON artifact and a featurised epoch table it reproduces the
+published predictions, with no dependency on sklearn or on how the model was
+fitted. This is the module the GUI and any batch-scoring tool should call.
 
 The feature table must be produced by `somnus.data.datasets.featurize()`, so
-that column names and units match the artifact. That module selects its PSD
-backend via `SOMNUS_FEATURE_BACKEND` (default `openseize_backend`, the
-implementation the released model was trained with; `scipy_backend` is the
-scipy equivalent, verified numerically identical by
-`tools/verify_openseize_port.py`). The artifact records which one produced it
-in its `feature_backend` field.
+that column names and units match the artifact.
 
 Usage as a library:
     from somnus import load_model, predict
     art = load_model()                 # the packaged v1.0 artifact
     labels, proba = predict(art, feature_df)
 
-Usage as a CLI (scores one recording from either configured dataset and, if the
-recording carries manual labels, reports agreement):
-    python -m somnus.predict --score <recording_id>
-    python -m somnus.predict --score <recording_id> --out scored.csv
+Usage as a CLI (scores one EDF and, if a scoring file is supplied, reports
+agreement with it):
+    python -m somnus.predict --score myrec.edf
+    python -m somnus.predict --score myrec.edf --out scored.csv
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from importlib.resources import files as _resource_files
 
 import numpy as np
@@ -168,7 +163,12 @@ def to_scored_csv(labels: np.ndarray, t_start: np.ndarray,
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--model", default=DEFAULT_ARTIFACT)
-    ap.add_argument("--score", required=True, help="recording id to score")
+    ap.add_argument("--score", required=True,
+                    help="path to the EDF recording to score")
+    ap.add_argument("--scored", default=None,
+                    help="optional one-hot scoring CSV, to report agreement")
+    ap.add_argument("--coords", default=None,
+                    help="optional video tracking coordinates (.pkl)")
     ap.add_argument("--out", default=None, help="write predictions to this CSV")
     ap.add_argument("--no-decode", action="store_true",
                     help="skip the HMM decode (raw per-epoch argmax only)")
@@ -183,17 +183,17 @@ def main() -> None:
     from somnus.data import datasets as B
 
     art = load_model(args.model)
-    entries = B.discover_local() + B.discover_bids()
-    match = [e for e in entries if e["recording"] == args.score]
-    if not match:
-        print(f"No recording '{args.score}'. First few available: "
-              f"{[e['recording'] for e in entries[:5]]}")
+    if not os.path.exists(args.score):
+        print(f"No such recording: {args.score}")
         return
+    name = os.path.splitext(os.path.basename(args.score))[0]
 
-    df = B.featurize(match[0])
+    df = B.featurize({"recording": name, "edf": args.score, "dataset": "user",
+                      "group": "user", "subject": name.split("_")[0],
+                      "scored": args.scored, "pkl": args.coords})
     labels, p = predict(art, df, decode=not args.no_decode,
                         stickiness=args.stickiness)
-    print(f"Scored {args.score}: {len(df)} epochs")
+    print(f"Scored {name}: {len(df)} epochs")
     print("  predicted:", {s: int((labels == s).sum()) for s in art["states"]})
 
     if "state" in df.columns:

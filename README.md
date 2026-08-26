@@ -64,6 +64,12 @@ label came from, and only human-sourced labels can become training targets.
 
 ## Fine-tuning
 
+**This is the point of the project.** Somnus is not trying to be the best sleep
+scorer in the world — commercial scorers beat the base model on clean wild-type
+data. It is trying to be the one you can actually adapt when your animals do not
+look like anyone else's: a disease model whose sleep architecture is degraded
+enough that a fixed commercial scorer fails outright.
+
 The performance loss on labelled epochs is minimized with a penalty that
 pulls the weights toward the existing model. We use a parameter λ,
 where "keep the shipped model" (λ→∞), and "train on my data
@@ -94,11 +100,16 @@ On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 A full write-up of the evaluation, caveats, and design rationale will
 accompany the forthcoming preprint.
 
-## Reproducing / retraining
+## What ships, and what doesn't
 
-The training pipeline ships in `somnus.data` / `somnus.train`. Point
-`SOMNUS_LOCAL_DIR` / `SOMNUS_BIDS_DIR` at your source corpora and see
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the pipeline reference.
+The package is the scorer and the tools to adapt it: feature extraction, the
+trained model, batch scoring, the review GUI, and fine-tuning. The code that
+assembled the original multi-lab training corpus and fitted the released
+weights is deliberately **not** included — it encodes choices specific to our
+data, and the base model is a starting point rather than the product. The
+corpus assembly and training recipe are documented in the forthcoming preprint.
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the module reference.
 
 ## License
 

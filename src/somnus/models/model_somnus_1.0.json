@@ -546,6 +546,6 @@
     -5.30270771484933
   ],
   "epoch_sec": 4.0,
-  "feature_backend": "somnus.features.openseize_backend",
-  "notes": "Features must be produced by somnus.features.openseize_backend via somnus.data.datasets.featurize(). The scipy and openseize backends are verified numerically identical by tools/verify_openseize_port.py, so either reproduces this model. Missing features are set to 0 after centring, i.e. they contribute nothing."
+  "feature_backend": "somnus.features",
+  "notes": "Features must be produced by somnus.features via somnus.data.datasets.featurize(). Missing features are set to 0 after centring, i.e. they contribute nothing."
 }

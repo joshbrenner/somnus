@@ -1,1 +1,1 @@
-"""Dataset adapters, training-set assembly, and per-recording featurization."""
+"""Per-recording featurization: EDF (+ optional scoring, video) -> epoch table."""
