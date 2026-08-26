@@ -35,11 +35,6 @@ python -m somnus.predict --score myrec.edf --out scored.csv
 | `somnus.predict` | Design matrix, logistic probabilities, HMM/Viterbi decode. Reads the JSON artifact; numpy/pandas only. |
 | `somnus.train.finetune` | Anchored fine-tuning: adapt the released weights to your labels. |
 
-The code that assembled the original multi-lab training corpus and fitted the
-released weights is **not** part of the package — the recipe is documented in
-the preprint instead. What ships is the model and the tools to run and adapt
-it.
-
 ### Spectral method
 
 PSD is a Welch estimate from `openseize.spectra.estimators.psd`, called with
@@ -56,7 +51,7 @@ weights.
 | File | What it is |
 |---|---|
 | `src/somnus/models/model_somnus_1.0.json` | **The release artifact.** Plain JSON: columns, centring stats, coefficients, transition matrix, priors. ~15 KB, no pickles. Ships in the wheel. |
-| `src/somnus/predict.py` | **Self-contained scorer** — numpy/pandas only, no sklearn and no coupling to how the model was fitted. |
+| `src/somnus/predict.py` | **Self-contained scorer** |
 
 ```python
 from somnus import load_model
@@ -64,13 +59,6 @@ from somnus.predict import predict
 art = load_model()                         # packaged artifact
 labels, proba = predict(art, feature_df)   # feature_df from somnus.data.datasets.featurize()
 ```
-
-Verified: `somnus.predict` reproduces the sklearn pipeline the weights were
-fitted with to floating-point noise (max |Δprob| = 3.3e-16, argmax agreement
-1.000000).
-
-**The JSON artifact is deliberately pickle-free**: reloading it needs nothing
-but numpy/pandas, with no coupling to a training module or sklearn version.
 
 ## Headline performance
 
