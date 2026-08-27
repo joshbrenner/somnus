@@ -173,10 +173,8 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
 def frame_times_from_video(video: str) -> np.ndarray | None:
     """Read the true time of every frame straight out of a video file.
 
-    This is the best answer available when there is no timestamps file: it is
-    what the camera actually recorded, not an assumption. It needs no decoding,
-    only a walk through the packet headers, so it is quick even on a long
-    recording. Returns None if the video cannot be read.
+    If the user doesn't have a timestamps file, some recorders save precise timing info to the video file itself.
+    We try to extract that; if it doesn't have it, we just have to assume even timing between video frames.
     """
     try:
         import av
@@ -201,20 +199,12 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
     they had to be assumed rather than measured.
 
     Tried in order, best first:
-
       1. a `*_timestamps.npy` beside the coordinates with one entry per frame,
       2. one cached from a previous read of the video,
       3. the video itself, whose packets carry the real capture time of every
          frame,
       4. a frame rate the caller declared,
       5. evenly spaced across the recording.
-
-    Only the first three are measured. The last two assume the camera never
-    dropped a frame, and cameras do -- gaps of 0.03 to 0.31 seconds have been
-    seen in a single recording where the nominal rate says 0.16. Movement from
-    an assumed timeline can therefore drift out of step with the EEG, so those
-    two come back with a warning rather than an error: this is the caller's
-    call to make, not something to refuse on their behalf.
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
     mismatched = []
