@@ -92,7 +92,7 @@ class TaskRunner:
 
 # --------------------------------------------------------------- frame times
 class FrameTimesDialog(QDialog):
-    """Asks for a video frame rate when tracking has arrived without timestamps.
+    """Finds a video frame rate when tracking has arrived without timestamps.
     """
 
     ASSUME, NO_VIDEO = 1, 2
@@ -115,12 +115,10 @@ class FrameTimesDialog(QDialog):
 
         if warn:
             lay.addWidget(QLabel(
-                "Cameras drop frames. With no per-frame timestamps and no video "
-                "to read them<br>from, Somnus has to assume an even rate, and "
-                "where the camera dropped frames<br>positions are misplaced "
-                "&mdash; by minutes over a long recording. Locomotion from<br>"
-                "these recordings may be <b>unreliable</b>. EEG and EMG are "
-                "unaffected."))
+                "Cameras drop frames. With no per-frame timestamps "
+                ", Somnus has to assume an even rate, and "
+                "dropped frames will result in misalignment between tracking and EEG"
+                "by minutes over a long recording."))
 
         form = QFormLayout()
         self.sp_mm = QDoubleSpinBox()
