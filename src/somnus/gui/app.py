@@ -7,9 +7,8 @@ Five tabs, taken in order:
 Point it at a folder of recordings, score them, correct what the model got
 wrong, adapt the model to your corrections, then compare the two.
 
-Anything slow runs off the main thread, so the window stays responsive. Nothing
-is ever written outside the project folder; your recordings are opened for
-reading only.
+Anything slow runs off the main thread, so the window stays responsive. Everything
+written to project folder.
 
 Run:
     somnus-gui            (or: python -m somnus.gui)
@@ -94,9 +93,6 @@ class TaskRunner:
 # --------------------------------------------------------------- frame times
 class FrameTimesDialog(QDialog):
     """Asks for a video frame rate when tracking has arrived without timestamps.
-
-    Shown on the GUI thread before any scoring starts, because featurizing runs
-    on a worker thread where a prompt would block invisibly.
     """
 
     USE_FPS, NO_VIDEO = 1, 2
@@ -165,9 +161,6 @@ class FrameTimesDialog(QDialog):
 # ------------------------------------------------------------------- hypnogram
 class HypnogramCanvas(FigureCanvas):
     """The whole recording at a glance: a state ribbon over a confidence trace.
-
-    Time runs along the bottom in hours, so it lines up with the video and the
-    light cycle. Clicking anywhere jumps to that point.
     """
     seeked = Signal(int)
 
@@ -195,11 +188,8 @@ class HypnogramCanvas(FigureCanvas):
                        threshold=None, conf_raw=None, eligible=None):
         """Draw the state ribbon and the confidence panel beneath it.
 
-        Both the smoothed and the raw confidence are drawn. The smoothed one is
-        readable; the raw one is what the threshold actually tests, and dips in
-        it can hide under the smoothed line. The epochs the scorer will visit
-        are marked directly, so you can see which they are rather than guess
-        from where a line crosses a curve.
+        Both the smoothed and the raw confidence are drawn. The epochs the scorer will visit
+        are marked directly.
         """
         self.ax.clear(); self.axc.clear()
         self._n = n = len(labels)
@@ -219,8 +209,6 @@ class HypnogramCanvas(FigureCanvas):
             self.ax.plot(x[np.flatnonzero(manual)],
                          np.full(int(np.sum(manual)), 2.65), "|",
                          color="#1a7f37", ms=6, mew=1.2)
-            # placed as a title rather than inside the plot, where a long
-            # recording's ticks would run underneath it
             self.ax.set_title(f"green ticks = manually reviewed "
                               f"({int(np.sum(manual))} epochs)",
                               loc="right", fontsize=7, color="#1a7f37", pad=2)
@@ -335,8 +323,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(tick_note)
 
         # Which electrode is which. Filled in when recordings are added, and
-        # meant to be checked: getting EMG wrong costs the muscle tone that
-        # identifies REM, and nothing in the file reliably says which is which.
+        # meant to be verified by the user.
         chan = QGroupBox("Channels")
         cl = QHBoxLayout(chan)
         cl.addWidget(QLabel("EEG:"))
@@ -350,8 +337,7 @@ class MainWindow(QMainWindow):
         self.ed_emg = QLineEdit()
         self.ed_emg.setPlaceholderText("e.g. 3")
         self.ed_emg.setMaximumWidth(70)
-        self.ed_emg.setToolTip("The one channel carrying EMG. It cannot also "
-                               "be an EEG channel.")
+        self.ed_emg.setToolTip("The single channel carrying EMG.")
         cl.addWidget(self.ed_emg)
         self.lbl_chan = QLabel("")
         self.lbl_chan.setWordWrap(True)
@@ -365,10 +351,6 @@ class MainWindow(QMainWindow):
             ["use", "recording", "labels", "video", "tracking",
              "velocity", "manual epochs"])
         hh = self.tbl.horizontalHeader()
-        # Only the recording name stretches; the rest are fixed-ish. Long
-        # filenames are elided with the full path on hover, so the table's size
-        # hint cannot grow with the longest filename and drag the window wider
-        # than the screen.
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
         hh.setStretchLastSection(False)
@@ -949,9 +931,7 @@ class MainWindow(QMainWindow):
     def ensure_frame_times(self, queue: list[core.Recording]) -> bool:
         """Ask what to do about recordings whose video has no frame times.
 
-        Asked before any scoring starts, because the answer is something only
-        the user has. Returns False if they cancelled, in which case nothing
-        should run. The explanation appears once per user, but the frame rate is
+        The explanation appears once per user, but the frame rate is
         still requested whenever it is not already known.
         """
         need = [r for r in queue if r.needs_frame_times]
@@ -987,21 +967,18 @@ class MainWindow(QMainWindow):
         return True
 
     def ensure_channels(self) -> bool:
-        """Refuse to score until the user has said which channels are which."""
+        """Won't score until the user has provided channel ID."""
         p = self.project
         if p and p.eeg_chan and p.emg_chan is not None:
             return True
         QMessageBox.information(
             self, "Which channels?",
-            "Set the EEG and EMG channels on the Project tab first.\n\n"
-            "Somnus does not guess: a recording does not reliably say which "
-            "electrode is which, and using the wrong one as EMG loses the "
-            "muscle tone that identifies REM.")
+            "Set the EEG and EMG channels on the Project tab first.\n\n")
         self.tabs.setCurrentIndex(0)
         return False
 
     def on_channels_edited(self):
-        """Store what the user typed in the channel boxes, if it makes sense."""
+        """Store what the user typed in the channel boxes."""
         if not self.project:
             return
         def parse(text):
