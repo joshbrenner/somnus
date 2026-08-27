@@ -33,9 +33,9 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QInputDialog, QLabel, QListWidget, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTableWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from somnus.gui import core
@@ -333,6 +333,32 @@ class MainWindow(QMainWindow):
             "recordings that have manual labels.")
         tick_note.setWordWrap(True)
         lay.addWidget(tick_note)
+
+        # Which electrode is which. Filled in when recordings are added, and
+        # meant to be checked: getting EMG wrong costs the muscle tone that
+        # identifies REM, and nothing in the file reliably says which is which.
+        chan = QGroupBox("Channels")
+        cl = QHBoxLayout(chan)
+        cl.addWidget(QLabel("EEG:"))
+        self.ed_eeg = QLineEdit()
+        self.ed_eeg.setPlaceholderText("e.g. 0, 1, 2")
+        self.ed_eeg.setMaximumWidth(140)
+        self.ed_eeg.setToolTip("Channel numbers to consider for EEG, separated "
+                               "by commas. The cleanest of them is used.")
+        cl.addWidget(self.ed_eeg)
+        cl.addWidget(QLabel("   EMG:"))
+        self.ed_emg = QLineEdit()
+        self.ed_emg.setPlaceholderText("e.g. 3")
+        self.ed_emg.setMaximumWidth(70)
+        self.ed_emg.setToolTip("The one channel carrying EMG. It cannot also "
+                               "be an EEG channel.")
+        cl.addWidget(self.ed_emg)
+        self.lbl_chan = QLabel("")
+        self.lbl_chan.setWordWrap(True)
+        cl.addWidget(self.lbl_chan, 1)
+        for e in (self.ed_eeg, self.ed_emg):
+            e.editingFinished.connect(self.on_channels_edited)
+        lay.addWidget(chan)
 
         self.tbl = QTableWidget(0, 7)
         self.tbl.setHorizontalHeaderLabels(
@@ -668,7 +694,7 @@ class MainWindow(QMainWindow):
                     continue
                 log(f"[{i}/{len(queue)}] {r.name}: {len(hu)} manual epochs …")
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
-                feat = core.featurize(r, cache=cache)
+                feat = core.featurize(r, cache=cache, project=proj)
                 truth = hu.set_index("epoch")["state"]
                 idx = truth.index.to_numpy()
                 idx = idx[(idx >= 0) & (idx < len(feat))]
@@ -717,7 +743,7 @@ class MainWindow(QMainWindow):
             for i, r in enumerate(queue, 1):
                 log(f"[{i}/{len(queue)}] {r.name} …")
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
-                feat = core.featurize(r, cache=cache)
+                feat = core.featurize(r, cache=cache, project=proj)
                 lab, _ = core.score(feat, model, decode=decode, stickiness=stick)
                 # prefer manual labels wherever they exist
                 st = core.LabelStore(proj, r.name)
@@ -824,6 +850,16 @@ class MainWindow(QMainWindow):
         have = {r.name for r in self.project.recordings}
         new = [r for r in found if r.name not in have]
         self.project.recordings.extend(new)
+        # Fill the channel boxes from the first recording, so there is something
+        # concrete to check rather than two empty fields.
+        if new and not self.project.eeg_chan:
+            try:
+                eeg, emg = core.suggest_channels(new[0].edf)
+                self.project.eeg_chan, self.project.emg_chan = eeg, emg
+                self.log(f"channels suggested: EEG {eeg}, EMG {emg} — "
+                         f"check these on the Project tab before scoring")
+            except Exception as e:
+                self.log(f"could not read channels from {new[0].name}: {e}")
         self.project.save()
         self.refresh_project(); self.refresh_score_list()
         self.log(f"added {len(new)} recording(s) from {d}")
@@ -832,6 +868,9 @@ class MainWindow(QMainWindow):
         """Redraw the project table from the project on disk."""
         p = self.project
         self.lbl_proj.setText(f"<b>{p.name}</b> — {p.path}")
+        self.ed_eeg.setText(", ".join(str(i) for i in p.eeg_chan))
+        self.ed_emg.setText("" if p.emg_chan is None else str(p.emg_chan))
+        self.show_channel_names()
         self.tbl.blockSignals(True)
         self.tbl.setRowCount(0)
         for r in p.recordings:
@@ -947,6 +986,57 @@ class MainWindow(QMainWindow):
         self.refresh_project()
         return True
 
+    def ensure_channels(self) -> bool:
+        """Refuse to score until the user has said which channels are which."""
+        p = self.project
+        if p and p.eeg_chan and p.emg_chan is not None:
+            return True
+        QMessageBox.information(
+            self, "Which channels?",
+            "Set the EEG and EMG channels on the Project tab first.\n\n"
+            "Somnus does not guess: a recording does not reliably say which "
+            "electrode is which, and using the wrong one as EMG loses the "
+            "muscle tone that identifies REM.")
+        self.tabs.setCurrentIndex(0)
+        return False
+
+    def on_channels_edited(self):
+        """Store what the user typed in the channel boxes, if it makes sense."""
+        if not self.project:
+            return
+        def parse(text):
+            return [int(t) for t in text.replace(",", " ").split()]
+        try:
+            eeg = parse(self.ed_eeg.text())
+            emg = parse(self.ed_emg.text())
+            if len(emg) != 1:
+                raise ValueError("give exactly one EMG channel")
+            if not eeg:
+                raise ValueError("give at least one EEG channel")
+            if emg[0] in eeg:
+                raise ValueError("a channel cannot be both EEG and EMG")
+        except ValueError as e:
+            self.lbl_chan.setText(f"<span style='color:#b00'>{e}</span>")
+            return
+        self.project.eeg_chan, self.project.emg_chan = eeg, emg[0]
+        self.project.save()
+        self.show_channel_names()
+
+    def show_channel_names(self):
+        """Spell out which named channel each number refers to."""
+        if not self.project or not self.project.recordings:
+            self.lbl_chan.setText(""); return
+        try:
+            names = core.channel_names(self.project.recordings[0].edf)
+        except Exception:
+            self.lbl_chan.setText(""); return
+        def show(i):
+            return names[i] if 0 <= i < len(names) else f"<b>no channel {i}</b>"
+        eeg = ", ".join(show(i) for i in self.project.eeg_chan)
+        emg = show(self.project.emg_chan) if self.project.emg_chan is not None else "-"
+        self.lbl_chan.setText(f"<span style='color:#555'>EEG: {eeg} &nbsp;|&nbsp; "
+                              f"EMG: {emg}</span>")
+
     def _selected(self) -> core.Recording | None:
         """The row currently highlighted, for the tabs that work on one at a time."""
         rows = {i.row() for i in self.tbl.selectedIndexes()}
@@ -984,6 +1074,8 @@ class MainWindow(QMainWindow):
             return
         if self.runner.busy():
             return
+        if not self.ensure_channels():
+            return
         if not self.ensure_frame_times(queue):
             return
         decode = self.cb_decode.isChecked()
@@ -996,7 +1088,7 @@ class MainWindow(QMainWindow):
                 log(f"[{i}/{len(queue)}] {r.name}: featurizing …")
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 try:
-                    feat = core.featurize(r, cache=cache)
+                    feat = core.featurize(r, cache=cache, project=proj)
                 except Exception as e:
                     log(f"    SKIPPED — {type(e).__name__}: {e}")
                     continue
@@ -1229,7 +1321,7 @@ class MainWindow(QMainWindow):
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 if not os.path.exists(cache):
                     log(f"featurizing {r.name} …")
-                feat = core.featurize(r, cache=cache)
+                feat = core.featurize(r, cache=cache, project=proj)
                 hu = st.df[st.manual_mask()][["epoch", "state"]]
                 m = feat.merge(hu, on="epoch", suffixes=("_old", ""))
                 if "state_old" in m.columns:

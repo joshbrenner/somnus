@@ -16,10 +16,12 @@ An `entry` is a plain dict:
      "scored":    None,               # optional scoring CSV
      "pkl":       None}               # optional video tracking coordinates
 
-For `dataset="user"` the first up-to-three EDF channels are treated as EEG and
-the last as EMG. For `dataset="bids"` add `"channels"` (a BIDS `channels.tsv`,
-used to identify EEG/EMG) and optionally `"events"` (a stage-scored
-`events.tsv`).
+Name the channels with `eeg_chan` and `emg_chan`, either as channel names or as
+numbers. Leave them out and Somnus works out which is which from the data and
+says so. EEG and EMG are never the same channel.
+
+For `dataset="bids"` add `"channels"` (a BIDS `channels.tsv`, used to identify
+EEG/EMG) and optionally `"events"` (a stage-scored `events.tsv`).
 
 Labels are OPTIONAL throughout: scoring an unlabeled recording is the normal
 case. All source data is opened READ-ONLY.
@@ -254,6 +256,55 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
 
 
 # ------------------------------------------------------------- EEG selection
+def _as_index(ch, names: list[str], what: str) -> int:
+    """Turn a channel name or number into an index, or say why it cannot."""
+    if isinstance(ch, str):
+        if ch not in names:
+            raise ValueError(f"{what}: no channel named {ch!r} in this "
+                             f"recording. It has: {', '.join(names)}")
+        return names.index(ch)
+    i = int(ch)
+    if not 0 <= i < len(names):
+        raise ValueError(f"{what}: channel {i} is out of range. This recording "
+                         f"has {len(names)} channels (0-{len(names) - 1}).")
+    return i
+
+
+def resolve_channels(raw, eeg_chan, emg_chan) -> tuple[list[int], int]:
+    """Work out which channels are EEG and which one is EMG.
+
+    Both must be given, as channel names or numbers. Somnus will not guess: a
+    file says nothing reliable about which electrode is which, and picking the
+    wrong one costs you the muscle tone that identifies REM, silently. Several
+    EEG channels may be named -- the cleanest is chosen from among them -- but
+    exactly one EMG, and it can never be one of the EEG channels.
+    """
+    names = raw.ch_names
+    if eeg_chan is None or emg_chan is None:
+        raise ValueError(
+            f"this recording has {len(names)} channels and Somnus will not "
+            f"guess which is which. Say so with eeg_chan and emg_chan, as "
+            f"names or numbers -- for example eeg_chan=[0, 1, 2], emg_chan=3. "
+            f"The channels are: {', '.join(names)}")
+
+    eeg = [_as_index(c, names, "eeg_chan")
+           for c in (eeg_chan if isinstance(eeg_chan, (list, tuple)) else [eeg_chan])]
+    emg_list = emg_chan if isinstance(emg_chan, (list, tuple)) else [emg_chan]
+    if len(emg_list) != 1:
+        raise ValueError(f"emg_chan must name exactly one channel, got "
+                         f"{len(emg_list)}")
+    emg = _as_index(emg_list[0], names, "emg_chan")
+
+    if not eeg:
+        raise ValueError("eeg_chan must name at least one channel")
+    if emg in eeg:
+        raise ValueError(f"channel {names[emg]!r} is listed as both EEG and "
+                         f"EMG. They must be different channels.")
+    if len(set(eeg)) != len(eeg):
+        raise ValueError("eeg_chan lists the same channel more than once")
+    return eeg, emg
+
+
 def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
     """Pick the cleanest EEG channel out of the several a recording may hold.
 
@@ -278,7 +329,8 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
 # ------------------------------------------------------------- featurization
 def featurize(entry: dict, probe_seconds: float = 900.0,
               fps: float | None = None,
-              mm_per_px: float | None = None) -> pd.DataFrame:
+              mm_per_px: float | None = None,
+              eeg_chan=None, emg_chan=None) -> pd.DataFrame:
     """Read one recording and return its per-epoch feature table.
 
     Opens the EDF, picks the best EEG channel, works out what the recording can
@@ -294,13 +346,14 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     """
     fps = fps if fps is not None else entry.get("fps")
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
+    eeg_chan = eeg_chan if eeg_chan is not None else entry.get("eeg_chan")
+    emg_chan = emg_chan if emg_chan is not None else entry.get("emg_chan")
     raw = mne.io.read_raw_edf(entry["edf"], preload=False)
     sfreq = float(raw.info["sfreq"])
     names = raw.ch_names
 
-    if entry["dataset"] != "bids":       # plain EDF: EEG first, EMG last
-        eeg_idx = list(range(min(3, len(names))))
-        emg_i = len(names) - 1
+    if entry["dataset"] != "bids":
+        eeg_idx, emg_i = resolve_channels(raw, eeg_chan, emg_chan)
     else:
         types_map = {}
         with open(entry["channels"]) as fh:

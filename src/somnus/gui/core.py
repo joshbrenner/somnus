@@ -127,6 +127,8 @@ class Project:
     path: str
     name: str = "somnus_project"
     model: str = ""                    # active model artifact
+    eeg_chan: list[int] = field(default_factory=list)   # which channels are EEG
+    emg_chan: int | None = None                         # and which one is EMG
     recordings: list[Recording] = field(default_factory=list)
     created: str = field(default_factory=_now)
 
@@ -181,6 +183,24 @@ class Project:
     def get(self, name: str) -> Recording | None:
         """Look up one recording by name."""
         return next((r for r in self.recordings if r.name == name), None)
+
+
+def channel_names(edf: str) -> list[str]:
+    """The channel names in a recording, in order."""
+    import mne
+    return mne.io.read_raw_edf(edf, preload=False).ch_names
+
+
+def suggest_channels(edf: str) -> tuple[list[int], int | None]:
+    """A starting assignment to show the user: everything but the last is EEG.
+
+    Only a suggestion for the boxes on the Project tab, which the user is
+    expected to check. Nothing scores with it until they accept it.
+    """
+    n = len(channel_names(edf))
+    if n < 2:
+        return list(range(n)), None
+    return list(range(n - 1)), n - 1
 
 
 def discover_recordings(folder: str) -> list[Recording]:
@@ -419,8 +439,12 @@ class LabelStore:
 
 
 # --------------------------------------------------------------------- scoring
-def featurize(recording: Recording, cache: str | None = None) -> pd.DataFrame:
-    """Feature table for one recording, cached under the project."""
+def featurize(recording: Recording, cache: str | None = None,
+              project: "Project | None" = None) -> pd.DataFrame:
+    """Feature table for one recording, cached under the project.
+
+    The project supplies which channels are EEG and which is EMG.
+    """
     if cache and os.path.exists(cache):
         return pd.read_csv(cache)
     from somnus.data import datasets as B
@@ -430,7 +454,9 @@ def featurize(recording: Recording, cache: str | None = None) -> pd.DataFrame:
              "scored": recording.scored,
              "pkl": None if recording.skip_video else recording.coords}
     df = B.featurize(entry, fps=recording.fps,
-                     mm_per_px=recording.mm_per_px)
+                     mm_per_px=recording.mm_per_px,
+                     eeg_chan=project.eeg_chan or None,
+                     emg_chan=project.emg_chan)
     if cache:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         df.to_csv(cache, index=False)
