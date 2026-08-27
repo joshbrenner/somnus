@@ -49,9 +49,6 @@ STATES = ["Wake", "NREM", "REM"]
 
 
 # ---- model feature layout ---------------------------------------------------
-# `delta_index` is deliberately NOT given to the model. It is just delta_rel
-# rescaled, so the two say exactly the same thing, and feeding both makes the
-# fitted weights arbitrary. It is still computed for plotting.
 UNIVERSAL = ["delta_rel", "theta_rel", "alpha_rel", "beta_rel",
              "theta_delta_log", "t1_power_log_z", "emg_low_log_z"]
 # optional block -> (columns, indicator name)
@@ -84,11 +81,7 @@ def _pathlib_shim() -> None:
 
 
 class _SafeUnpickler(pickle.Unpickler):
-    """Reads a tracking pickle even when it mentions software you do not have.
-
-    Files often carry references to the tool that wrote them. Anything that
-    cannot be found is replaced by a harmless empty stand-in, so the
-    coordinates still load.
+    """Reads a tracking pickle
     """
 
     def find_class(self, module, name):
@@ -156,13 +149,9 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
       metadata.
 
     A DeepLabCut file usually tracks many bodyparts. The one named
-    ``mouse_center`` is used; if the file has exactly one bodypart that is used
-    instead. Otherwise this raises, rather than guessing which point represents
-    the animal.
-
-    Low-likelihood points are NOT filtered here -- a poorly tracked frame is
-    kept as-is and will read as real movement. Filter before passing the file
-    in, replacing rejected points with NaN (velocity ignores non-finite steps).
+    ``mouse_center``, as in the default DLC model, is used; 
+    if the file has exactly one bodypart that is used
+    instead. Otherwise it asks.
     """
     ext = os.path.splitext(path)[1].lower()
 
@@ -206,20 +195,11 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
 def resolve_frame_times(base: str, n_frames: int, duration: float,
                         meta: dict, search_dir: str,
                         fps: float | None = None) -> tuple[np.ndarray, str]:
-    """Find the true time of every video frame. Raises if it cannot be trusted.
-
-    Cameras drop frames, so the gaps between them are uneven and assuming a
-    fixed rate would misplace positions by minutes. A timestamps file is
-    accepted only if it has exactly one entry per tracked frame.
-
-    Only the folder the coordinates came from is searched. Picking up a
-    timestamps file from anywhere else risks pairing positions with the wrong
-    times, which would corrupt movement silently.
+    """Find the true time of every video frame. Raises if it cannot be trusted. 
+    A timestamps file is accepted only if it has exactly one entry per tracked frame.
 
     `fps` is the caller stating that the video really does run at a fixed rate.
-    It is used only when no timestamps file exists at all. A file that exists
-    but has the wrong number of entries means the coordinates and the times came
-    from different videos, and stays an error.
+    It is used only when no timestamps file exists at all. 
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
     lengths = []
@@ -271,13 +251,11 @@ def _as_index(ch, names: list[str], what: str) -> int:
 
 
 def resolve_channels(raw, eeg_chan, emg_chan) -> tuple[list[int], int]:
-    """Work out which channels are EEG and which one is EMG.
+    """Sorts channels into EEG and EMG.
 
-    Both must be given, as channel names or numbers. Somnus will not guess: a
-    file says nothing reliable about which electrode is which, and picking the
-    wrong one costs you the muscle tone that identifies REM, silently. Several
+    Both must be given, as channel names or numbers. Several
     EEG channels may be named -- the cleanest is chosen from among them -- but
-    exactly one EMG, and it can never be one of the EEG channels.
+    exactly one EMG.
     """
     names = raw.ch_names
     if eeg_chan is None or emg_chan is None:
@@ -340,9 +318,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     `fps` declares a constant video frame rate, used only when the tracking has
     no timestamps file at all -- see resolve_frame_times(). `mm_per_px` converts
     tracked positions to millimetres, so `velocity` is reported in mm/s instead
-    of px/s; it does not change what the model sees, because velocity is
-    z-scored within recording and a constant scale cancels exactly. Both also
-    accept an `entry` key of the same name.
+    of px/s.
     """
     fps = fps if fps is not None else entry.get("fps")
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
@@ -405,8 +381,6 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
         df = pd.concat([df, H.velocity_features(None, None, n_ep)], axis=1)
 
     # --- labels ---
-    # Scoring is optional. Most recordings arrive unscored -- that is the whole
-    # point -- so a missing file leaves the state column empty, not an error.
     if not entry.get("scored") and not entry.get("events"):
         labels = np.full(n_ep, None, dtype=object)
     elif entry["dataset"] != "bids":     # one-hot scoring CSV
@@ -431,9 +405,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
                               "dataset", "group", "state")]
     df = H.add_temporal_context(df, base_cols, windows=CONTEXT_WINDOWS)
 
-    # Rescale features against this recording's own average and spread. Done
-    # over every epoch, so the reference reflects the animal's real mix of
-    # sleep and wake rather than whichever epochs get used later.
+    # Rescale features against this recording's own average and spread. 
     df = H.zscore_within(df, H.zscore_target_columns(df), group_col="recording")
 
     # record which features this recording was actually able to supply
