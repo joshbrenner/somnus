@@ -170,47 +170,102 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
     return np.asarray(obj, float), {}
 
 
+def frame_times_from_video(video: str) -> np.ndarray | None:
+    """Read the true time of every frame straight out of a video file.
+
+    This is the best answer available when there is no timestamps file: it is
+    what the camera actually recorded, not an assumption. It needs no decoding,
+    only a walk through the packet headers, so it is quick even on a long
+    recording. Returns None if the video cannot be read.
+    """
+    try:
+        import av
+        with av.open(video) as container:
+            stream = container.streams.video[0]
+            times = sorted(float(pkt.pts * stream.time_base)
+                           for pkt in container.demux(stream) if pkt.pts is not None)
+        return np.asarray(times, dtype=float) if times else None
+    except Exception:
+        return None
+
+
 def resolve_frame_times(base: str, n_frames: int, duration: float,
                         meta: dict, search_dir: str,
-                        fps: float | None = None) -> tuple[np.ndarray, str]:
-    """Find the true time of every video frame. Raises if it cannot be trusted. 
-    A timestamps file is accepted only if it has exactly one entry per tracked frame.
+                        fps: float | None = None,
+                        video: str | None = None,
+                        cache_dir: str | None = None
+                        ) -> tuple[np.ndarray, str, str | None]:
+    """Work out when each tracked frame was captured.
 
-    `fps` is the caller stating that the video really does run at a fixed rate.
-    It is used only when no timestamps file exists at all. 
+    Returns the times, a short note of where they came from, and a warning if
+    they had to be assumed rather than measured.
+
+    Tried in order, best first:
+
+      1. a `*_timestamps.npy` beside the coordinates with one entry per frame,
+      2. one cached from a previous read of the video,
+      3. the video itself, whose packets carry the real capture time of every
+         frame,
+      4. a frame rate the caller declared,
+      5. evenly spaced across the recording.
+
+    Only the first three are measured. The last two assume the camera never
+    dropped a frame, and cameras do -- gaps of 0.03 to 0.31 seconds have been
+    seen in a single recording where the nominal rate says 0.16. Movement from
+    an assumed timeline can therefore drift out of step with the EEG, so those
+    two come back with a warning rather than an error: this is the caller's
+    call to make, not something to refuse on their behalf.
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
-    lengths = []
+    mismatched = []
     for cand in cands:
         t = np.load(cand, allow_pickle=True).ravel().astype(float)
         if len(t) == n_frames:
-            return t, os.path.basename(cand)
-        lengths.append((os.path.basename(cand), len(t)))
+            return t, os.path.basename(cand), None
+        mismatched.append((os.path.basename(cand), len(t)))
 
-    sr = meta.get("sample_rate")
-    if sr and duration and abs(n_frames / duration - float(sr)) < 0.05 * float(sr):
-        return np.arange(n_frames, dtype=float) / float(sr), f"constant {sr:g} fps"
+    # Keyed on the video, so the scorer and the feature pipeline share one file
+    key = os.path.splitext(os.path.basename(video))[0] if video else base
+    cached = os.path.join(cache_dir, key + "_frametimes.npy") if cache_dir else None
+    if cached and os.path.exists(cached):
+        t = np.load(cached).ravel().astype(float)
+        if len(t) == n_frames:
+            return t, "frame times read from the video earlier", None
 
-    if lengths:
-        # A timestamps file IS here and disagrees: that is a real mismatch (for
-        # instance tracking run on a re-encoded copy of the video), not a
-        # missing file, so a declared fps must not paper over it.
-        detail = ", ".join(f"{n} has {k} frames" for n, k in lengths)
-        raise FileNotFoundError(
-            f"{base}: tracking has {n_frames} frames but no timestamps file in "
-            f"{search_dir} matches that length ({detail}). Frame timing cannot be "
-            f"trusted, so velocity is refused rather than guessed.")
+    if video and os.path.exists(video):
+        t = frame_times_from_video(video)
+        if t is not None and len(t) == n_frames:
+            if cached:
+                try:
+                    os.makedirs(os.path.dirname(cached), exist_ok=True)
+                    np.save(cached, t)
+                except OSError:
+                    pass
+            return t, f"frame times read from {os.path.basename(video)}", None
+        if t is not None:
+            mismatched.append((os.path.basename(video), len(t)))
 
-    if fps:
-        return np.arange(n_frames, dtype=float) / float(fps), f"declared {fps:g} fps"
+    detail = ""
+    if mismatched:
+        detail = (" (" + ", ".join(f"{n} has {k}" for n, k in mismatched)
+                  + ", none matching)")
 
-    raise FileNotFoundError(
-        f"{base}: found tracking coordinates but no '*timestamps.npy' in "
-        f"{search_dir}. Frame timing cannot be trusted, so velocity is refused "
-        f"rather than guessed. Put the matching timestamps file alongside the "
-        f"coordinates, pass fps=<frames per second> to featurize() to accept a "
-        f"constant frame rate, or omit the coordinates to score without "
-        f"velocity.")
+    sr = fps or meta.get("sample_rate")
+    if sr:
+        warn = (f"{base}: no measured frame times{detail}; assuming a constant "
+                f"{float(sr):g} fps. If the camera dropped frames the movement "
+                f"trace will drift out of step with the EEG.")
+        return np.arange(n_frames, dtype=float) / float(sr), \
+            f"assumed {float(sr):g} fps", warn
+
+    rate = n_frames / duration if duration else 0.0
+    warn = (f"{base}: no measured frame times{detail}; spreading {n_frames} "
+            f"frames evenly over {duration:.0f} s ({rate:.2f} fps). If the "
+            f"camera dropped frames the movement trace will drift out of step "
+            f"with the EEG.")
+    t = (np.arange(n_frames, dtype=float) / rate if rate > 0
+         else np.zeros(n_frames, dtype=float))
+    return t, "spread evenly over the recording", warn
 
 
 # ------------------------------------------------------------- EEG selection
@@ -293,8 +348,9 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     measure, and computes the EEG, EMG and movement features for every epoch.
     Manual scoring and video tracking are used if given and skipped if not.
 
-    `fps` declares a constant video frame rate, used only when the tracking has
-    no timestamps file at all.
+    `fps` declares a constant video frame rate, used only when no measured
+    frame times can be found -- see resolve_frame_times(), which also explains
+    where `video` and `cache_dir` fit in.
     """
     fps = fps if fps is not None else entry.get("fps")
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
@@ -332,13 +388,16 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
 
     # --- velocity (only if the recording has video tracking) ---
     vel_src = "none"
+    vel_warn = None
     vel_unit = "px/s"
     if entry.get("pkl"):
         coords, meta = load_coordinates(entry["pkl"])
-        # search only the folder the coordinates came from
-        t, vel_src = resolve_frame_times(entry["recording"], len(coords),
-                                         raw.n_times / sfreq, meta,
-                                         os.path.dirname(entry["pkl"]), fps=fps)
+        t, vel_src, vel_warn = resolve_frame_times(
+            entry["recording"], len(coords), raw.n_times / sfreq, meta,
+            os.path.dirname(entry["pkl"]), fps=fps,
+            video=entry.get("video"), cache_dir=entry.get("cache_dir"))
+        if vel_warn:
+            print(f"[velocity] {vel_warn}")
         vel = H.velocity_features(coords, t, n_ep)
         if mm_per_px:
             k = float(mm_per_px)
@@ -391,6 +450,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
         "sfreq": sfreq, "eeg_edge_hz": round(eeg_edge, 1),
         "emg_edge_hz": round(emg_edge, 1), "tiers": sorted(tiers),
         "emg_bands": sorted(emg_bands), "velocity_source": vel_src,
+        "velocity_warning": vel_warn,
         "velocity_unit": vel_unit,
         "eeg_channel": names[best], "emg_channel": names[emg_i],
         "n_epochs": int(n_ep),

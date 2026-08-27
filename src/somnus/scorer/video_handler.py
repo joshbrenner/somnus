@@ -64,44 +64,36 @@ class VideoHandler:
             return np.load(cached)
 
         print("VideoHandler: No frame times on disk. Reading them from the video...")
-        try:
-            pts_list = []
-            for packet in self.container.demux(self.stream):
-                if packet.pts is not None:
-                    time_sec = float(packet.pts * self.stream.time_base)
-                    pts_list.append(time_sec)
-            
-            # After fast-forwarding through packets, we MUST seek back to 0 for playback
-            self.container.seek(0, stream=self.stream)
-            
-            if not pts_list:
-                return self._generate_cfr_fallback()
-                
-            # Sort to guarantee presentation order (fixes issues if video contains B-frames)
-            pts_list.sort()
-            ts_array = np.array(pts_list, dtype=np.float64)
-            
-            # Keep them for next time, but only somewhere we are allowed to
-            # write. With no cache we simply read them again on the next open.
-            if cached:
+        from somnus.data.datasets import frame_times_from_video
+        ts_array = frame_times_from_video(self.video_path)
+        if ts_array is None or not len(ts_array):
+            return self._generate_cfr_fallback()
+
+        # Demuxing leaves the container part-way through; rewind for playback.
+        self.container.seek(0, stream=self.stream)
+
+        # Keep them for next time, but only somewhere we are allowed to write.
+        # With no cache we simply read them again on the next open.
+        if cached:
+            try:
                 os.makedirs(os.path.dirname(cached), exist_ok=True)
                 np.save(cached, ts_array)
                 print(f"VideoHandler: Read {len(ts_array)} frame times and cached them.")
-            else:
+            except OSError:
                 print(f"VideoHandler: Read {len(ts_array)} frame times.")
+        else:
+            print(f"VideoHandler: Read {len(ts_array)} frame times.")
 
-            return ts_array
-            
-        except Exception as e:
-            print(f"VideoHandler: PyAV extraction failed: {e}")
-            return self._generate_cfr_fallback()
+        return ts_array
 
     def _cache_path(self):
         """Where extracted frame times may be stored, or None if nowhere is safe."""
         if not self.cache_dir:
             return None
         base = os.path.splitext(os.path.basename(self.video_path))[0]
-        return os.path.join(self.cache_dir, base + '_timestamps.npy')
+        # Same name the feature pipeline uses, so whichever runs first spares
+        # the other the work.
+        return os.path.join(self.cache_dir, base + '_frametimes.npy')
 
     def _generate_cfr_fallback(self):
         """Generates a linear array assuming perfectly stable framerate."""

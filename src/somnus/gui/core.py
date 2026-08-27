@@ -95,21 +95,31 @@ class Recording:
     skip_video: bool = False           # user chose to score without velocity
 
     @property
+    def frame_times_measured(self) -> bool:
+        """Whether the real capture times are available, rather than assumed.
+
+        True with a timestamps file, or with a video to read them out of.
+        """
+        return bool(self.timestamps or self.video)
+
+    @property
     def has_velocity(self) -> bool:
         """Whether movement can be measured: needs positions and frame times.
 
         Cameras drop frames, so the times have to come from a timestamps file or
         from a frame rate the user has stated. 
         """
-        if self.skip_video or not self.coords:
-            return False
-        return bool(self.timestamps) or bool(self.fps)
+        return bool(self.coords) and not self.skip_video
 
     @property
     def needs_frame_times(self) -> bool:
-        """Tracking exists but its frame times do not, so the user must decide."""
-        return (bool(self.coords) and not self.timestamps
-                and not self.fps and not self.skip_video)
+        """Tracking exists and nothing can supply its real frame times.
+
+        The user is told once, and can give a frame rate or leave it evenly
+        spaced; either way scoring goes ahead.
+        """
+        return (bool(self.coords) and not self.skip_video
+                and not self.frame_times_measured and not self.fps)
 
 
 @dataclass
@@ -434,7 +444,11 @@ def featurize(recording: Recording, cache: str | None = None,
              "dataset": "user", "group": "user",
              "subject": recording.name.split("_")[0],
              "scored": recording.scored,
-             "pkl": None if recording.skip_video else recording.coords}
+             "pkl": None if recording.skip_video else recording.coords,
+             # the video carries the real capture time of every frame, and the
+             # cache saves reading them again next time
+             "video": recording.video,
+             "cache_dir": project.cache_dir if project else None}
     df = B.featurize(entry, fps=recording.fps,
                      mm_per_px=recording.mm_per_px,
                      eeg_chan=project.eeg_chan or None,

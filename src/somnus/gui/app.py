@@ -879,17 +879,23 @@ class MainWindow(QMainWindow):
             self.tbl.setItem(row, 4, path_cell(r.coords))
             vel = QTableWidgetItem("yes" if r.has_velocity else "no")
             vel.setTextAlignment(Qt.AlignCenter)
-            if r.coords and not r.timestamps:
-                vel.setText("no timestamps")
+            if r.coords and r.needs_frame_times:
+                vel.setText("assumed timing")
                 vel.setToolTip(
-                    "Tracking found, but no *_timestamps.npy in this folder.\n\n"
-                    "Only this folder is searched — a stale timestamps file from "
-                    "elsewhere would pair positions with the wrong times, and "
-                    "because the cameras dropped frames that misaligns tracking "
-                    "from the EEG by minutes, silently.\n\n"
-                    "Scoring this recording will ERROR rather than guess. Either "
-                    "put the matching timestamps file beside the coordinates, or "
-                    "remove the coordinates to score without velocity.")
+                    "Tracking found, but nothing here records when each frame "
+                    "was captured — no *_timestamps.npy beside the "
+                    "coordinates, and no video to read them out of.\n\n"
+                    "Scoring will go ahead using evenly spaced frames, or a "
+                    "frame rate you give it. Cameras drop frames, so where "
+                    "that happens the movement trace drifts out of step with "
+                    "the EEG.\n\n"
+                    "To measure it instead, put the matching timestamps file "
+                    "beside the coordinates, or the video beside the "
+                    "recording.")
+            elif r.coords and not r.timestamps and r.video:
+                vel.setToolTip(
+                    "No timestamps file, but the video is here — the real "
+                    "capture time of every frame is read from it.")
             self.tbl.setItem(row, 5, vel)
             nh = QTableWidgetItem(str(store.n_manual()))
             nh.setTextAlignment(Qt.AlignCenter)
