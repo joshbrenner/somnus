@@ -114,7 +114,7 @@ class Recording:
     def needs_frame_times(self) -> bool:
         """Tracking exists and nothing can supply its real frame times.
 
-        The user is told once; scoring goes ahead either way.
+        The user is warned that this might have errors; scoring goes ahead either way.
         """
         return (bool(self.coords) and not self.skip_video
                 and not self.frame_times_measured)
