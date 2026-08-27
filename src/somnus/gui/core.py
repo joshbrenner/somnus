@@ -4,7 +4,7 @@ Projects, the label table, scoring, and the hand-off to the manual scorer all
 live here. None of it touches Qt, so it can be scripted or tested without a
 display.
 
-YOUR SOURCE DATA IS NEVER WRITTEN TO. Recordings, scoring files, videos and
+Recordings, scoring files, videos and
 tracking files are opened for reading only. Everything Somnus produces goes in
 the project folder.
 """
@@ -24,19 +24,15 @@ from somnus.predict import DEFAULT_ARTIFACT
 STATES = ["Wake", "NREM", "REM"]
 EPOCH_SEC = 4.0
 
-# Where each label came from. Fine-tuning may only ever learn from labels a
-# person supplied -- training the model on its own guesses would make it look
-# more confident while teaching it nothing.
+# Where each label came from. 
 SRC_MODEL = "model"        # produced by the classifier
 SRC_CONFIRMED = "manual_confirmed"   # the user looked and agreed
 SRC_CORRECTED = "manual_corrected"   # the user changed it
 SRC_IMPORTED = "manual_imported"     # from a pre-existing manual scoring file
 SRC_EXCLUDED = "manual_excluded"     # the user marked it Artifact/unscorable
-# Labels fine-tuning is allowed to learn from. Excluded epochs are left out:
-# the user said they are not clean sleep, so the model must not learn them,
-# but the decision is remembered so re-scoring does not undo it.
+# Labels fine-tuning is allowed to learn from. 
 MANUAL_SOURCES = (SRC_CONFIRMED, SRC_CORRECTED, SRC_IMPORTED)
-# Sources a model write must not clobber (includes exclusions).
+# Sources a model write must not touch.
 PROTECTED_SOURCES = MANUAL_SOURCES + (SRC_EXCLUDED,)
 
 
@@ -46,9 +42,7 @@ def _now() -> str:
 
 
 # ------------------------------------------------------------------ user config
-# Settings that belong to the person rather than to any one project -- mainly
-# which warnings they have already seen. Kept outside the project folder so
-# "don't ask again" holds everywhere.
+
 def user_config_path() -> str:
     """Where this user's settings live, following the platform's convention."""
     if sys.platform == "win32":
@@ -70,9 +64,7 @@ def load_user_config() -> dict:
 
 
 def save_user_config(**values) -> None:
-    """Record settings for this user. Never fails loudly.
-
-    These are conveniences, so being unable to save one must not stop scoring.
+    """Record settings for this user (just for convenience)
     """
     cfg = load_user_config()
     cfg.update(values)
@@ -88,7 +80,7 @@ def save_user_config(**values) -> None:
 # --------------------------------------------------------------------- project
 @dataclass
 class Recording:
-    """One recording, and the files that belong with it."""
+    """the recording, and the files that belong with it."""
 
     name: str
     edf: str
@@ -107,7 +99,7 @@ class Recording:
         """Whether movement can be measured: needs positions and frame times.
 
         Cameras drop frames, so the times have to come from a timestamps file or
-        from a frame rate the user has stated. Nothing is guessed.
+        from a frame rate the user has stated. 
         """
         if self.skip_video or not self.coords:
             return False
@@ -195,7 +187,7 @@ def suggest_channels(edf: str) -> tuple[list[int], int | None]:
     """A starting assignment to show the user: everything but the last is EEG.
 
     Only a suggestion for the boxes on the Project tab, which the user is
-    expected to check. Nothing scores with it until they accept it.
+    expected to check. 
     """
     n = len(channel_names(edf))
     if n < 2:
@@ -236,17 +228,10 @@ def discover_recordings(folder: str) -> list[Recording]:
             # Tracking: the `*coordinates.pkl` convention first, then a
             # DeepLabCut export. Only files named as DLC writes them are
             # considered, so a sibling `_scored.csv` is never mistaken for
-            # tracking. DLC's `_full.pickle` is its pre-assembly dump, not a
-            # coordinate table, so it is excluded.
+            # tracking.
             coords = (first(base + "*coordinates.pkl")
                       or first(base + "*DLC*.h5")
                       or first(base + "*DLC*.csv", exclude=("_full", "_meta")))
-            # Timestamps are looked for ONLY in the folder the user pointed at.
-            # Deliberately no widened/recursive search: picking up a stale or
-            # mismatched timestamps file from elsewhere would pair positions with
-            # the wrong times, and where frames have been dropped that
-            # misaligns tracking from the EEG by minutes -- silently. Reporting
-            # "not found" is the safe failure, so velocity is withheld instead.
             ts = first(base + "*timestamps.npy")
             video = first(base + "*.mp4", exclude=("_annotated", "_mask",
                                                   "_overlay", "_highlights"))
@@ -264,7 +249,7 @@ LABEL_COLS = ["epoch", "t_start", "state", "source", "confidence",
 
 
 class LabelStore:
-    """One recording's labels, and where each one came from.
+    """the recording's labels, and where each one came from.
 
     One row per epoch, recording the state, who decided it, and how confident
     the model was.
@@ -409,9 +394,6 @@ class LabelStore:
     def import_manual(self, scored_csv: str, n_epochs: int) -> int:
         """Bring in scoring the user already had, as manual labels.
 
-        Their file is only read, never altered. Its finer bins are collapsed onto
-        whole epochs, and an epoch is accepted only if all of it agrees: a mixed
-        epoch is not a label.
         """
         s = pd.read_csv(scored_csv)
         step = float(np.median(np.diff(s["Time_sec"].to_numpy()))) or 0.5
@@ -441,7 +423,7 @@ class LabelStore:
 # --------------------------------------------------------------------- scoring
 def featurize(recording: Recording, cache: str | None = None,
               project: "Project | None" = None) -> pd.DataFrame:
-    """Feature table for one recording, cached under the project.
+    """Feature table for the recording, cached under the project.
 
     The project supplies which channels are EEG and which is EMG.
     """
@@ -622,17 +604,8 @@ def read_viewer_labels(project: "Project", recording: Recording,
 
     Returns how many epochs were corrected, confirmed, excluded and reverted.
 
-    **Only epochs whose label actually changed count as manual.** The file the
-    scorer opens already holds the model's own labels, so an epoch nobody
-    touched comes back identical to one that was checked and agreed with. There
-    is no way to tell them apart afterwards, so neither is assumed to be
-    reviewed -- otherwise the model's entire output would become its own
-    training data. The Confirm brush exists to say "I looked and this is right"
-    deliberately.
-
-    Epochs painted Artifact or Unclear are recorded as excluded: the user is
-    saying this is not clean sleep, so it stays out of fine-tuning even if it
-    previously held a valid label.
+    Epochs painted Artifact or Unclear are recorded as excluded. 'Confirm' adds
+    a correct label to the fine-tuning set.
     """
     path = os.path.join(project.labels_dir, f"{recording.name}_scored.csv")
     if not os.path.exists(path):
@@ -662,8 +635,7 @@ def read_viewer_labels(project: "Project", recording: Recording,
         hit = [st for st in STATES if st in blk and blk[st].sum() == per]
         if len(hit) != 1:
             continue                       # mixed epoch is not a label
-        # The Confirm brush is the ONLY affirmative signal available: a label left
-        # untouched is byte-identical to one that was checked and agreed with, so
+        # The Confirm brush is the ONLY affirmative signal available:
         # without this flag an unedited epoch can never count as reviewed.
         confirmed = ("Confirmed" in blk
                      and blk["Confirmed"].sum() == per)
@@ -674,16 +646,13 @@ def read_viewer_labels(project: "Project", recording: Recording,
                     store.set_manual_label(e, hit[0], corrected=False)
                     n_con += 1
                 continue
-            # Not confirmed and unchanged. If the row is flagged manual but now
-            # equals the model's own prediction, the user edited it and then put
-            # it back -- drop the flag, else it stays green in the hypnogram and
-            # gets fed to fine-tuning as the model's own output.
+            # Not confirmed and unchanged (more precisely: changed mistakenly, changed back)
             if cur_src in MANUAL_SOURCES and store.revert_to_model(e):
                 n_rev += 1
             continue
 
         store.set_manual_label(e, hit[0], corrected=True)
-        # A "correction" back to exactly what the model said is not a correction,
+        # as above, "correction" back to exactly what the model said is not a correction,
         # UNLESS the user explicitly confirmed it with the Confirm brush.
         if confirmed:
             store.set_manual_label(e, hit[0], corrected=False)
