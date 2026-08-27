@@ -1,6 +1,6 @@
 """Load one recording and turn it into the per-epoch feature table.
 
-`featurize()` is the entry point: give it an EDF, plus optionally a scoring file
+From `featurize()`. give it an EDF, plus optionally a scoring file
 and video tracking, and it returns the table `somnus.predict.predict()` reads.
 What the recording can actually measure is worked out from the data itself, and
 anything beyond that is left blank, so one model handles recordings of very
@@ -17,14 +17,11 @@ An `entry` is a plain dict:
      "pkl":       None}               # optional video tracking coordinates
 
 Name the channels with `eeg_chan` and `emg_chan`, either as channel names or as
-numbers. Leave them out and Somnus works out which is which from the data and
-says so. EEG and EMG are never the same channel.
+numbers.
 
 For `dataset="bids"` add `"channels"` (a BIDS `channels.tsv`, used to identify
 EEG/EMG) and optionally `"events"` (a stage-scored `events.tsv`).
 
-Labels are OPTIONAL throughout: scoring an unlabeled recording is the normal
-case. All source data is opened READ-ONLY.
 """
 from __future__ import annotations
 
@@ -297,9 +294,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     Manual scoring and video tracking are used if given and skipped if not.
 
     `fps` declares a constant video frame rate, used only when the tracking has
-    no timestamps file at all -- see resolve_frame_times(). `mm_per_px` converts
-    tracked positions to millimetres, so `velocity` is reported in mm/s instead
-    of px/s.
+    no timestamps file at all.
     """
     fps = fps if fps is not None else entry.get("fps")
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
@@ -346,13 +341,6 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
                                          os.path.dirname(entry["pkl"]), fps=fps)
         vel = H.velocity_features(coords, t, n_ep)
         if mm_per_px:
-            # Convert after the feature, not before it. `log_velocity` is
-            # log10(v + eps) with a fixed eps, so rescaling the coordinates
-            # would move it by log10(k) at high speed but by much less near
-            # zero -- exactly where a sleeping animal sits. Shifting the log by
-            # log10(k) instead is the same as scaling eps with the units, which
-            # keeps the change an exact constant offset and therefore invisible
-            # to the within-recording z-score the model actually reads.
             k = float(mm_per_px)
             vel["velocity"] = vel["velocity"] * k
             vel["log_velocity"] = vel["log_velocity"] + np.log10(k)
