@@ -32,8 +32,6 @@ import csv
 import glob
 import os
 import pickle
-import sys
-import types
 
 import numpy as np
 import pandas as pd
@@ -64,22 +62,6 @@ CONTEXT_WINDOWS = (3, 15)
 
 
 # ------------------------------------------------------------ pickle loading
-def _pathlib_shim() -> None:
-    """Let pickles written by older Python versions still load.
-
-    Some tracking files were saved when file paths lived elsewhere in the
-    standard library. This puts them back where the pickle expects to find them.
-    """
-    if "pathlib._local" in sys.modules:
-        return
-    import pathlib
-    m = types.ModuleType("pathlib._local")
-    for n in ("Path", "PosixPath", "WindowsPath", "PurePath",
-              "PurePosixPath", "PureWindowsPath"):
-        setattr(m, n, getattr(pathlib, n))
-    sys.modules["pathlib._local"] = m
-
-
 class _SafeUnpickler(pickle.Unpickler):
     """Reads a tracking pickle
     """
@@ -172,7 +154,6 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
                     f"matching .csv export.") from e
         return _xy_from_table(df, path), {}
 
-    _pathlib_shim()
     with open(path, "rb") as fh:
         obj = _SafeUnpickler(fh).load()
 
