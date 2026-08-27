@@ -13,7 +13,7 @@ An `entry` is a plain dict:
      "dataset":   "user",             # "user" | "bids"
      "group":     "user",             # free-form grouping label
      "subject":   "m1",
-     "scored":    None,               # optional one-hot scoring CSV
+     "scored":    None,               # optional scoring CSV
      "pkl":       None}               # optional video tracking coordinates
 
 For `dataset="user"` the first up-to-three EDF channels are treated as EEG and
