@@ -95,7 +95,7 @@ class FrameTimesDialog(QDialog):
     """Asks for a video frame rate when tracking has arrived without timestamps.
     """
 
-    USE_FPS, NO_VIDEO = 1, 2
+    ASSUME, NO_VIDEO = 1, 2
 
     def __init__(self, parent, names: list[str], warn: bool = True):
         super().__init__(parent)
@@ -115,22 +115,14 @@ class FrameTimesDialog(QDialog):
 
         if warn:
             lay.addWidget(QLabel(
-                "Cameras drop frames. Without per-frame timestamps Somnus has to "
-                "assume the video<br>runs at a constant rate, and where it does "
-                "not, positions are misplaced &mdash; by<br>minutes over a long "
-                "recording. Locomotion from these recordings may be<br>"
-                "<b>unreliable</b>. EEG and EMG are unaffected."))
+                "Cameras drop frames. With no per-frame timestamps and no video "
+                "to read them<br>from, Somnus has to assume an even rate, and "
+                "where the camera dropped frames<br>positions are misplaced "
+                "&mdash; by minutes over a long recording. Locomotion from<br>"
+                "these recordings may be <b>unreliable</b>. EEG and EMG are "
+                "unaffected."))
 
         form = QFormLayout()
-        self.sp_fps = QDoubleSpinBox()
-        self.sp_fps.setRange(0.1, 1000.0)
-        self.sp_fps.setDecimals(3)
-        self.sp_fps.setValue(30.0)
-        self.sp_fps.setSuffix(" fps")
-        self.sp_fps.setToolTip("The frame rate of the video the tracking came "
-                               "from. Required to use these recordings' video.")
-        form.addRow("Video frame rate:", self.sp_fps)
-
         self.sp_mm = QDoubleSpinBox()
         self.sp_mm.setRange(0.0, 1000.0)
         self.sp_mm.setDecimals(4)
@@ -145,17 +137,17 @@ class FrameTimesDialog(QDialog):
         lay.addWidget(self.cb_quiet)
 
         bb = QDialogButtonBox()
-        b_use = bb.addButton("Use this frame rate", QDialogButtonBox.AcceptRole)
+        b_use = bb.addButton("Score anyway", QDialogButtonBox.AcceptRole)
         b_skip = bb.addButton("Score without video", QDialogButtonBox.ActionRole)
         bb.addButton(QDialogButtonBox.Cancel)
-        b_use.clicked.connect(lambda: self.done(self.USE_FPS))
+        b_use.clicked.connect(lambda: self.done(self.ASSUME))
         b_skip.clicked.connect(lambda: self.done(self.NO_VIDEO))
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
 
-    def values(self) -> tuple[float, float | None]:
+    def values(self) -> float | None:
         mm = float(self.sp_mm.value())
-        return float(self.sp_fps.value()), (mm if mm > 0 else None)
+        return mm if mm > 0 else None
 
 
 # ------------------------------------------------------------------- hypnogram
@@ -937,8 +929,7 @@ class MainWindow(QMainWindow):
     def ensure_frame_times(self, queue: list[core.Recording]) -> bool:
         """Ask what to do about recordings whose video has no frame times.
 
-        The explanation appears once per user, but the frame rate is
-        still requested whenever it is not already known.
+        The explanation appears once per user.
         """
         need = [r for r in queue if r.needs_frame_times]
         if not need:
@@ -948,19 +939,19 @@ class MainWindow(QMainWindow):
         dlg = FrameTimesDialog(self, [r.name for r in need], warn=not warned)
         code = dlg.exec()
 
-        if code == FrameTimesDialog.USE_FPS:
-            fps, mm = dlg.values()
+        if code == FrameTimesDialog.ASSUME:
+            mm = dlg.values()
             for r in need:
-                r.fps, r.mm_per_px, r.skip_video = fps, mm, False
-            self.log(f"WARNING: no frame times for {len(need)} recording(s); "
-                     f"assuming a constant {fps:g} fps. If the camera dropped "
-                     f"frames, locomotion from these may be unreliable "
+                r.mm_per_px, r.skip_video = mm, False
+            self.log(f"WARNING: no measured frame times for {len(need)} "
+                     f"recording(s); assuming an even rate. If the camera "
+                     f"dropped frames, locomotion from these may be unreliable "
                      f"(velocity in {'mm/s' if mm else 'px/s'}).")
             for r in need:
                 self.log(f"    {r.name}")
         elif code == FrameTimesDialog.NO_VIDEO:
             for r in need:
-                r.skip_video, r.fps = True, None
+                r.skip_video = True
             self.log(f"Scoring {len(need)} recording(s) without video; "
                      f"EEG/EMG only.")
         else:

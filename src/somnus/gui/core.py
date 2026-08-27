@@ -90,7 +90,6 @@ class Recording:
     video: str | None = None
     selected: bool = False             # ticked in the Project tab
     notes: str = ""
-    fps: float | None = None           # declared frame rate, if no timestamps
     mm_per_px: float | None = None     # optional, reports velocity in mm/s
     skip_video: bool = False           # user chose to score without velocity
 
@@ -115,11 +114,10 @@ class Recording:
     def needs_frame_times(self) -> bool:
         """Tracking exists and nothing can supply its real frame times.
 
-        The user is told once, and can give a frame rate or leave it evenly
-        spaced; either way scoring goes ahead.
+        The user is told once; scoring goes ahead either way.
         """
         return (bool(self.coords) and not self.skip_video
-                and not self.frame_times_measured and not self.fps)
+                and not self.frame_times_measured)
 
 
 @dataclass
@@ -449,8 +447,7 @@ def featurize(recording: Recording, cache: str | None = None,
              # cache saves reading them again next time
              "video": recording.video,
              "cache_dir": project.cache_dir if project else None}
-    df = B.featurize(entry, fps=recording.fps,
-                     mm_per_px=recording.mm_per_px,
+    df = B.featurize(entry, mm_per_px=recording.mm_per_px,
                      eeg_chan=project.eeg_chan or None,
                      emg_chan=project.emg_chan)
     if cache:

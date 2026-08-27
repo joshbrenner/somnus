@@ -187,9 +187,19 @@ def frame_times_from_video(video: str) -> np.ndarray | None:
         return None
 
 
+def video_frame_rate(video: str) -> float | None:
+    """The frame rate the video itself reports. None if it cannot be read."""
+    try:
+        import av
+        with av.open(video) as container:
+            rate = container.streams.video[0].average_rate
+        return float(rate) if rate else None
+    except Exception:
+        return None
+
+
 def resolve_frame_times(base: str, n_frames: int, duration: float,
                         meta: dict, search_dir: str,
-                        fps: float | None = None,
                         video: str | None = None,
                         cache_dir: str | None = None
                         ) -> tuple[np.ndarray, str, str | None]:
@@ -203,7 +213,7 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
       2. one cached from a previous read of the video,
       3. the video itself, whose packets carry the real capture time of every
          frame,
-      4. a frame rate the caller declared,
+      4. evenly spaced at the rate the video reports,
       5. evenly spaced across the recording.
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
@@ -240,7 +250,9 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
         detail = (" (" + ", ".join(f"{n} has {k}" for n, k in mismatched)
                   + ", none matching)")
 
-    sr = fps or meta.get("sample_rate")
+    sr = meta.get("sample_rate")
+    if not sr and video and os.path.exists(video):
+        sr = video_frame_rate(video)
     if sr:
         warn = (f"{base}: no measured frame times{detail}; assuming a constant "
                 f"{float(sr):g} fps. If the camera dropped frames the movement "
@@ -329,7 +341,6 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
 
 # ------------------------------------------------------------- featurization
 def featurize(entry: dict, probe_seconds: float = 900.0,
-              fps: float | None = None,
               mm_per_px: float | None = None,
               eeg_chan=None, emg_chan=None) -> pd.DataFrame:
     """Read one recording and return its per-epoch feature table.
@@ -338,11 +349,9 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     measure, and computes the EEG, EMG and movement features for every epoch.
     Manual scoring and video tracking are used if given and skipped if not.
 
-    `fps` declares a constant video frame rate, used only when no measured
-    frame times can be found -- see resolve_frame_times(), which also explains
-    where `video` and `cache_dir` fit in.
+    See resolve_frame_times() for how frame times are found, and where `video`
+    and `cache_dir` fit in.
     """
-    fps = fps if fps is not None else entry.get("fps")
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
     eeg_chan = eeg_chan if eeg_chan is not None else entry.get("eeg_chan")
     emg_chan = emg_chan if emg_chan is not None else entry.get("emg_chan")
@@ -384,7 +393,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
         coords, meta = load_coordinates(entry["pkl"])
         t, vel_src, vel_warn = resolve_frame_times(
             entry["recording"], len(coords), raw.n_times / sfreq, meta,
-            os.path.dirname(entry["pkl"]), fps=fps,
+            os.path.dirname(entry["pkl"]),
             video=entry.get("video"), cache_dir=entry.get("cache_dir"))
         if vel_warn:
             print(f"[velocity] {vel_warn}")
