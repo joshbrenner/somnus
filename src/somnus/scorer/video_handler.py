@@ -51,13 +51,6 @@ class VideoHandler:
 
     def _load_or_extract_timestamps(self):
         """Find the time of every frame: from a file, from the cache, or by reading the video.
-
-        A `*_timestamps.npy` sitting beside the video is the camera's own record
-        and is preferred. Failing that, the times are read out of the video
-        itself, which is quick because it needs no decoding. That result is kept
-        in the project cache if there is one -- never beside the video, because
-        source folders are read-only, and because a file written there would
-        later be mistaken for the camera's own.
         """
         beside = os.path.splitext(self.video_path)[0] + '_timestamps.npy'
         if os.path.exists(beside):
@@ -73,7 +66,6 @@ class VideoHandler:
         print("VideoHandler: No frame times on disk. Reading them from the video...")
         try:
             pts_list = []
-            # Demuxing is incredibly fast because it skips video decoding
             for packet in self.container.demux(self.stream):
                 if packet.pts is not None:
                     time_sec = float(packet.pts * self.stream.time_base)
