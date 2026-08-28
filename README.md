@@ -16,9 +16,9 @@ on whatever data you have**, and that can be readily adapted to disease models
 with degraded sleep architecture where heavier commercial scorers may fail altogether.
 
 Features are computed in frequency tiers gated by each recording's measured bandwidth. 
-Every feature is then z-scored within its own recording. The temporal structure of sleep comes from an 
-HMM/Viterbi model with a "transition resistance" knob which allows you to adjust the 
-frequency of state transitions. 
+The temporal structure of sleep comes from an HMM/Viterbi model with a "transition resistance" 
+knob which allows you to adjust the frequency of state transitions. This can also be retrained on 
+data from your model organism.
 
 ## Install
 
