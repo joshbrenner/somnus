@@ -106,7 +106,7 @@ class Recording:
         """Whether movement can be measured: needs positions and frame times.
 
         Cameras drop frames, so the times have to come from a timestamps file or
-        from a frame rate the user has stated. 
+        from the video.
         """
         return bool(self.coords) and not self.skip_video
 
@@ -368,7 +368,9 @@ class LabelStore:
         # so "is this back to what the model said?" stays answerable after a
         # re-score with different settings
         base = new.set_index("epoch")["state"]
-        keep["model_state"] = keep["epoch"].map(base).fillna(keep["model_state"])
+        hit = keep["epoch"].isin(base.index)
+        keep.loc[hit, "model_state"] = keep.loc[hit, "epoch"].map(base)
+        keep.loc[hit, "model"] = os.path.basename(model)
         new = new[~new["epoch"].isin(protected)]
         self.df = (pd.concat([keep, new], ignore_index=True)
                    .drop_duplicates("epoch", keep="last"))
@@ -447,9 +449,12 @@ def featurize(recording: Recording, cache: str | None = None,
              # cache saves reading them again next time
              "video": recording.video,
              "cache_dir": project.cache_dir if project else None}
+    # the app has already asked the user about assumed frame times, in
+    # ensure_frame_times, before any scoring path can reach this call
     df = B.featurize(entry, mm_per_px=recording.mm_per_px,
                      eeg_chan=project.eeg_chan or None,
-                     emg_chan=project.emg_chan)
+                     emg_chan=project.emg_chan,
+                     assume_frame_times=True)
     if cache:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         df.to_csv(cache, index=False)
@@ -552,11 +557,16 @@ def write_viewer_bundle(project: "Project", recording: Recording,
 
     # merge in any manual labels already recorded, so the UI opens on the latest
     lab = np.array(labels, dtype=object)
+    exc = np.zeros(n_ep, dtype=int)
     if len(store.df):
         h = store.df[store.manual_mask()]
         for e, s in zip(h["epoch"].to_numpy(), h["state"].to_numpy()):
             if 0 <= int(e) < n_ep:
                 lab[int(e)] = s
+        x = store.df.loc[store.df["source"] == SRC_EXCLUDED, "epoch"].to_numpy()
+        x = x[(x >= 0) & (x < n_ep)].astype(int)
+        lab[x] = None
+        exc[x] = 1
 
     rep = np.repeat(lab, per)
     t = np.arange(len(rep)) * bin_sec
@@ -574,7 +584,7 @@ def write_viewer_bundle(project: "Project", recording: Recording,
         "Wake": (rep == "Wake").astype(int),
         "NREM": (rep == "NREM").astype(int),
         "REM": (rep == "REM").astype(int),
-        "Artifact": 0,
+        "Artifact": np.repeat(exc, per),
         "Unclear": 0,
         "Confirmed": conf_flag,
     })
@@ -652,14 +662,9 @@ def read_viewer_labels(project: "Project", recording: Recording,
                      and blk["Confirmed"].sum() == per)
 
         if hit[0] == cur_state:
-            if confirmed:
-                if cur_src != SRC_CONFIRMED:
-                    store.set_manual_label(e, hit[0], corrected=False)
-                    n_con += 1
-                continue
-            # Not confirmed and unchanged (more precisely: changed mistakenly, changed back)
-            if cur_src in MANUAL_SOURCES and store.revert_to_model(e):
-                n_rev += 1
+            if confirmed and cur_src != SRC_CONFIRMED:
+                store.set_manual_label(e, hit[0], corrected=False)
+                n_con += 1
             continue
 
         store.set_manual_label(e, hit[0], corrected=True)

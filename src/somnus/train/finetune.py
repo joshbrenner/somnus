@@ -18,7 +18,7 @@ manual corrections in each sleep state.
 
 Usage:
     python -m somnus.train.finetune --labels mydata.csv --out my_model.json
-    python -m somnus.train.finetune --labels mydata.csv --lam 10 --no-cv
+    python -m somnus.train.finetune --labels mydata.csv --lam 10
 """
 from __future__ import annotations
 
@@ -115,7 +115,8 @@ def adapt_transitions(df: pd.DataFrame, states: list[str], A_base: np.ndarray,
             if a in idx and bb in idx:
                 counts[idx[a], idx[bb]] += 1
     post = counts + kappa * A_base
-    return post / post.sum(axis=1, keepdims=True)
+    tot = post.sum(axis=1, keepdims=True)
+    return np.divide(post, tot, out=A_base.astype(float).copy(), where=tot > 0)
 
 
 # ------------------------------------------------------------------ evaluation
@@ -151,7 +152,8 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray, k: int) -> dict:
 
 
 # ----------------------------------------------------------------- data loading
-def prepare(art: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def prepare(art: dict, df: pd.DataFrame
+            ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
     """Pull out the labelled epochs and put them in the model's layout."""
     states = art["states"]
     if "state" not in df.columns:
@@ -246,8 +248,10 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
     if lam is None:
         if verbose:
             print("\nsweeping anchor strength (higher lam = closer to base model):")
+        swept = {}
         for l in lam_grid:
             m = eval_lam(l)
+            swept[l] = m
             curve.append(dict(lam=l, **{q: m[q] for q in
                                         ("accuracy", "balanced_accuracy", "macro_f1")}))
             if verbose:
@@ -255,14 +259,13 @@ def finetune(art: dict, df: pd.DataFrame, lam: float | None = None,
                       f"bal={m['balanced_accuracy']:.4f} macroF1={m['macro_f1']:.4f}")
         best = max(curve, key=lambda r: r["balanced_accuracy"])
         lam = best["lam"]
-        improved = best["balanced_accuracy"] > base_m["balanced_accuracy"]
+        tuned_m = swept[lam]
     else:
-        m = eval_lam(lam)
-        curve.append(dict(lam=lam, **{q: m[q] for q in
+        tuned_m = eval_lam(lam)
+        curve.append(dict(lam=lam, **{q: tuned_m[q] for q in
                                       ("accuracy", "balanced_accuracy", "macro_f1")}))
-        improved = m["balanced_accuracy"] > base_m["balanced_accuracy"]
+    improved = tuned_m["balanced_accuracy"] > base_m["balanced_accuracy"]
 
-    tuned_m = eval_lam(lam)
     if verbose:
         print(f"\nchosen lam={lam:g}: acc={tuned_m['accuracy']:.4f} "
               f"bal={tuned_m['balanced_accuracy']:.4f} "
@@ -311,15 +314,12 @@ def main() -> None:
     ap.add_argument("--kappa", type=float, default=KAPPA_DEFAULT,
                     help="trust in the base transition matrix (higher = keep it)")
     ap.add_argument("--no-adapt-transitions", action="store_true")
-    ap.add_argument("--no-cv", action="store_true",
-                    help="with --lam, skip the sweep")
     args = ap.parse_args()
 
     art = load_model(args.model)
     df = pd.read_csv(args.labels)
     res = finetune(art, df, lam=args.lam, kappa=args.kappa,
-                   adapt_A=not args.no_adapt_transitions,
-                   lam_grid=(args.lam,) if (args.lam and args.no_cv) else LAM_GRID)
+                   adapt_A=not args.no_adapt_transitions)
     if args.out:
         with open(args.out, "w") as fh:
             json.dump(res["artifact"], fh, indent=2)

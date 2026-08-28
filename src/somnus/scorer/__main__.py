@@ -91,7 +91,8 @@ class SleepReviewState:
         self.update_counter = 0 
         
         self.df = pd.read_csv(csv_path)
-        self.bin_step = self.df['Time_sec'].iloc[1] - self.df['Time_sec'].iloc[0]
+        t = self.df['Time_sec'].to_numpy(dtype=float)
+        self.bin_step = float(t[1] - t[0]) if len(t) > 1 else 0.5
         
         # Default Brush Size
         self.brush_size_sec = max(self.bin_step, 1.0)
@@ -144,7 +145,7 @@ class SleepReviewState:
                           if 'reviewed' in m.columns
                           else np.zeros(len(m), dtype=bool))
         n_flag = int(self._sm.sum())
-        n_low = int(((self._conf < self.certainty_threshold) & ~self._sm).sum())
+        n_low = int(self._low_mask().sum())
         print(f"[review] loaded metadata for {len(m)} epochs: {n_flag} "
               f"HMM-smoothed, {n_low} below the {self.certainty_threshold:.2f} "
               f"certainty threshold")
@@ -163,7 +164,8 @@ class SleepReviewState:
         out -- that is not the same as the model being unsure, and they already
         have their own colour in the timeline.
         """
-        return (self._conf < self.certainty_threshold) & ~self._sm
+        return ((self._conf < self.certainty_threshold) & ~self._sm
+                & ~self._reviewed)
 
     def n_low_certainty(self):
         """How many epochs the button would visit, counted the way it picks them."""
@@ -189,7 +191,7 @@ class SleepReviewState:
             probs[s] = (float(np.nanmean(self.review_meta[col].to_numpy()[lo:hi]))
                         if col in self.review_meta.columns else 0.0)
         conf = float(np.nanmean(self._conf[lo:hi]))
-        n_low = int((self._conf[lo:hi] < self.certainty_threshold).sum())
+        n_low = int(self._low_mask()[lo:hi].sum())
         return probs, conf, n_low, hi - lo
 
     def n_smoothed_in(self, t0, t1):
@@ -473,41 +475,63 @@ def on_mouse(event, x, y, flags, param):
 
 
 def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
-                 review_meta_path=None, certainty_threshold=0.80):
+                 review_meta_path=None, certainty_threshold=0.80,
+                 eeg_idx=None):
     """Run the scorer: open the recording and loop until the user quits."""
     print(f"Lazy Loading {os.path.basename(edf_path)}...")
     mne.set_log_level('ERROR')
-    
+
     raw = mne.io.read_raw_edf(edf_path, preload=False, verbose=False)
     sfreq, ch_names, n_times = raw.info['sfreq'], raw.ch_names, raw.n_times
 
+    if eeg_idx:
+        eeg_idx = [i for i in eeg_idx if 0 <= i < len(ch_names)]
     num_eeg = 3
-    if len(ch_names) != 4:
-        print(f"\nFound {len(ch_names)} channels in this recording.")
-        for i, ch in enumerate(ch_names):
-            print(f"[{i+1}] {ch}")
-            
-        while True:
-            eeg_input = input("\nEnter the numbers corresponding to the EEG channels (comma-separated, e.g., 1, 2): ")
-            try:
-                eeg_indices = [int(x.strip()) - 1 for x in eeg_input.split(',')]
-                if any(i < 0 or i >= len(ch_names) for i in eeg_indices):
-                    print("Invalid selection. Please choose numbers from the list above.")
-                    continue
-                    
-                eeg_ch_names = [ch_names[i] for i in eeg_indices]
-                emg_ch_names = [ch for i, ch in enumerate(ch_names) if i not in eeg_indices]
-                
-                print(f"\nAssigned EEG: {eeg_ch_names}")
-                print(f"Assigned EMG: {emg_ch_names}\n")
-                
-                ordered_ch_names = eeg_ch_names + emg_ch_names
-                raw.reorder_channels(ordered_ch_names)
-                ch_names = raw.ch_names
-                num_eeg = len(eeg_ch_names)
-                break
-            except ValueError:
-                print("Please enter valid comma-separated numbers.")
+    if eeg_idx:
+        eeg_ch_names = [ch_names[i] for i in eeg_idx]
+        emg_ch_names = [ch for i, ch in enumerate(ch_names) if i not in eeg_idx]
+        raw.reorder_channels(eeg_ch_names + emg_ch_names)
+        ch_names = raw.ch_names
+        num_eeg = len(eeg_ch_names)
+        print(f"Channels from the project: EEG {eeg_ch_names}, "
+              f"EMG {emg_ch_names}")
+    elif len(ch_names) != 4:
+        num_eeg = max(1, len(ch_names) - 1)
+        interactive = sys.stdin is not None and sys.stdin.isatty()
+        if not interactive:
+            print(f"{len(ch_names)} channels; showing the first {num_eeg} as "
+                  f"EEG and {ch_names[-1]!r} as EMG. Start the scorer from a "
+                  f"terminal to choose the channels yourself.")
+        else:
+            print(f"\nFound {len(ch_names)} channels in this recording.")
+            for i, ch in enumerate(ch_names):
+                print(f"[{i+1}] {ch}")
+
+            while True:
+                try:
+                    eeg_input = input("\nEnter the numbers corresponding to the EEG channels (comma-separated, e.g., 1, 2): ")
+                    eeg_indices = [int(x.strip()) - 1 for x in eeg_input.split(',')]
+                    if any(i < 0 or i >= len(ch_names) for i in eeg_indices):
+                        print("Invalid selection. Please choose numbers from the list above.")
+                        continue
+
+                    eeg_ch_names = [ch_names[i] for i in eeg_indices]
+                    emg_ch_names = [ch for i, ch in enumerate(ch_names) if i not in eeg_indices]
+
+                    print(f"\nAssigned EEG: {eeg_ch_names}")
+                    print(f"Assigned EMG: {emg_ch_names}\n")
+
+                    ordered_ch_names = eeg_ch_names + emg_ch_names
+                    raw.reorder_channels(ordered_ch_names)
+                    ch_names = raw.ch_names
+                    num_eeg = len(eeg_ch_names)
+                    break
+                except EOFError:
+                    print(f"No answer; showing the first {num_eeg} channels as "
+                          f"EEG and {ch_names[-1]!r} as EMG.")
+                    break
+                except ValueError:
+                    print("Please enter valid comma-separated numbers.")
 
     state = SleepReviewState(edf_path, csv_path, sfreq, ch_names, n_times,
                              screen_w, screen_h, review_meta_path=review_meta_path,
@@ -578,8 +602,8 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
         last_wall_time = current_wall_time
         
         if state.pending_jump_time is not None:
-            state.current_time_sec = state.pending_jump_time
-            state.playback_offset_sec = 0.0
+            state.playback_offset_sec = (state.pending_jump_time
+                                         - state.current_time_sec)
             state.pending_jump_time = None
 
         if not state.paused:
@@ -652,7 +676,7 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
         elif key == ord(']'): state.nudge_threshold(+0.05)
         elif key == ord('d'): 
             step = {4.0: 0.5, 10.0: 2.0, 30.0: 10.0, 60.0: 30.0}.get(state.window_width_sec, 4.0)
-            max_time = (n_times / sfreq) - state.window_width_sec
+            max_time = max(0.0, (n_times / sfreq) - state.window_width_sec)
             state.current_time_sec = min(max_time, state.current_time_sec + step)
             state.playback_offset_sec = 0.0 
             
@@ -705,6 +729,8 @@ def main():
         else os.path.splitext(edf_path)[0] + "_scored.csv"
     review_meta_path = os.path.abspath(sys.argv[3]) if len(sys.argv) > 3 else None
     certainty_threshold = float(sys.argv[4]) if len(sys.argv) > 4 else 0.80
+    eeg_idx = [int(x) for x in sys.argv[5].split(",")] \
+        if len(sys.argv) > 5 and sys.argv[5].strip() else None
 
     if not os.path.exists(csv_path):
         print(f"Error: Could not find matching {os.path.basename(csv_path)}")
@@ -718,7 +744,8 @@ def main():
 
     review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
                  review_meta_path=review_meta_path,
-                 certainty_threshold=certainty_threshold)
+                 certainty_threshold=certainty_threshold,
+                 eeg_idx=eeg_idx)
 
 if __name__ == "__main__":
     main()

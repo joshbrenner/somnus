@@ -36,9 +36,13 @@ from somnus.data.datasets import featurize
 art = load_model()                      # the packaged v1.0 model
 df = featurize({"recording": "myrec", "edf": "path/to/myrec.edf",
                 "dataset": "user", "group": "user", "subject": "m1",
-                "scored": None, "pkl": None})
+                "scored": None, "pkl": None},
+               eeg_chan=[0, 1, 2], emg_chan=3)
 labels, proba = predict(art, df)        # per-epoch states + probabilities
 ```
+
+`eeg_chan` and `emg_chan` set which channels are which, by number or by name.
+When several EEG channels are named, the best snr is used.
 
 `predict(..., stickiness=...)` controls the temporal decode: `0` disables
 smoothing, `1` uses the transition matrix as estimated, `>1` enforces longer
@@ -96,7 +100,7 @@ pulls the weights toward the existing model. We use a parameter λ,
 where "keep the shipped model" (λ→∞), and "train on my data
 alone" (λ→0). The default λ value is chosen by cross-validation on your recordings,
 so fine-tune versus retrain is decided by evidence. Adjust it at your risk -
-in fine-tuning tests on three subjects that the base model handled poorly, accuracy with our method went from
+in fine-tuning tests on three subjects that the base model handled poorly, balanced accuracy with our method went from
 0.706 → 0.783, while training on those recordings alone (λ→0) scored 0.642, worse than not adapting at all.
 
 ## Performance

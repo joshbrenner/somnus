@@ -83,6 +83,7 @@ class TaskRunner:
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(on_log)
         self.worker.failed.connect(on_log)
+        self.worker.failed.connect(on_done)
         self.worker.finished.connect(on_done)
         for sig in (self.worker.finished, self.worker.failed):
             sig.connect(self.thread.quit)
@@ -92,7 +93,7 @@ class TaskRunner:
 
 # --------------------------------------------------------------- frame times
 class FrameTimesDialog(QDialog):
-    """Finds a video frame rate when tracking has arrived without timestamps.
+    """Asks what to do when tracking has arrived without frame times.
     """
 
     ASSUME, NO_VIDEO = 1, 2
@@ -115,10 +116,10 @@ class FrameTimesDialog(QDialog):
 
         if warn:
             lay.addWidget(QLabel(
-                "Cameras drop frames. With no per-frame timestamps "
-                ", Somnus has to assume an even rate, and "
-                "dropped frames will result in misalignment between tracking and EEG"
-                "by minutes over a long recording."))
+                "Cameras drop frames. With no per-frame timestamps, Somnus "
+                "has to assume an even rate, and dropped frames will result "
+                "in misalignment between tracking and EEG by minutes over a "
+                "long recording."))
 
         form = QFormLayout()
         self.sp_mm = QDoubleSpinBox()
@@ -284,7 +285,9 @@ class MainWindow(QMainWindow):
     def log(self, msg: str) -> None:
         for box in (self.p_log, self.s_log, self.f_log):
             box.appendPlainText(msg.rstrip())
-        self.status.showMessage(msg.strip().splitlines()[-1][:140])
+        lines = msg.strip().splitlines()
+        if lines:
+            self.status.showMessage(lines[-1][:140])
 
     def _set_enabled(self, on: bool) -> None:
         for i in (1, 2, 3, 4):
@@ -649,7 +652,6 @@ class MainWindow(QMainWindow):
 
         def job(log):
             import json
-            from somnus.predict import load_model
             # Which recordings this model learned from. Tested on those it
             # will always look good, which says nothing about new data.
             try:
@@ -792,7 +794,17 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         name = name.strip() or os.path.basename(d.rstrip("/"))
+        if os.path.exists(os.path.join(d, "project.json")):
+            if QMessageBox.question(
+                    self, "Folder already has a project",
+                    "This folder already contains a Somnus project. "
+                    "Starting a new one here will overwrite its recording "
+                    "list and settings. Overwrite it?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No) != QMessageBox.Yes:
+                return
         self.project = core.Project.create(d, name=name)
+        self._reset_review()
         self.refresh_project(); self.refresh_score_list()
         self.refresh_eval_models()
         self.log(f"created project '{name}' at {d}")
@@ -806,6 +818,7 @@ class MainWindow(QMainWindow):
             self.project = core.Project.load(d)
         except Exception as e:
             QMessageBox.critical(self, "Cannot open", str(e)); return
+        self._reset_review()
         self.refresh_project(); self.refresh_score_list()
         self.refresh_eval_models()
         self.log(f"opened project {d} ({len(self.project.recordings)} recordings)")
@@ -875,8 +888,8 @@ class MainWindow(QMainWindow):
                     "Tracking found, but nothing here records when each frame "
                     "was captured — no *_timestamps.npy beside the "
                     "coordinates, and no video to read them out of.\n\n"
-                    "Scoring will go ahead using evenly spaced frames, or a "
-                    "frame rate you give it. Cameras drop frames, so where "
+                    "Scoring will go ahead using evenly spaced frames. "
+                    "Cameras drop frames, so where "
                     "that happens the movement trace drifts out of step with "
                     "the EEG.\n\n"
                     "To measure it instead, put the matching timestamps file "
@@ -1139,6 +1152,21 @@ class MainWindow(QMainWindow):
         self.refresh_project()
         self.tabs.setCurrentIndex(2)
 
+    def _reset_review(self):
+        """Drop the per-recording state left over from the previous project."""
+        self.rec_name = None
+        self.feat = self.labels = self.raw = self.proba = None
+        self.store = None
+        self.scored = {}
+        self.cur_epoch = 0
+        self.cmb_review.blockSignals(True)
+        self.cmb_review.clear()
+        self.cmb_review.blockSignals(False)
+        self.hyp.draw_hypnogram(np.array([], dtype=object))
+        self.lbl_epoch.setText("—")
+        self.lbl_qinfo.setText("")
+        self.lbl_launch.setText("")
+
     def load_for_review(self, name: str):
         d = getattr(self, "scored", {}).get(name)
         if not d:
@@ -1222,10 +1250,12 @@ class MainWindow(QMainWindow):
         # Launch the scorer as a module, so it works the same whether Somnus
         # was installed or is being run from a source checkout.
         import subprocess
+        cmd = [sys.executable, "-m", "somnus.scorer", r.edf, scored, meta,
+               f"{float(self.sp_thr.value()):.4f}"]
+        if self.project.eeg_chan:
+            cmd.append(",".join(str(i) for i in self.project.eeg_chan))
         try:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "somnus.scorer", r.edf, scored, meta,
-                 f"{float(self.sp_thr.value()):.4f}"])
+            proc = subprocess.Popen(cmd)
         except Exception as e:
             QMessageBox.critical(self, "Could not launch scorer", str(e)); return
         self._scorer_proc = proc
@@ -1241,6 +1271,8 @@ class MainWindow(QMainWindow):
         if not self.rec_name or self.project is None or self.store is None:
             return
         r = self.project.get(self.rec_name)
+        if r is None:
+            return
         res = core.read_viewer_labels(self.project, r, self.store,
                                       len(self.labels))
         self.store.save()
@@ -1272,7 +1304,12 @@ class MainWindow(QMainWindow):
         """Adapt the model to the corrections made so far."""
         if not self.project or self.runner.busy():
             return
-        if not self.ensure_frame_times(self.checked()):
+        queue = self.checked()
+        if not queue:
+            QMessageBox.information(self, "Nothing selected",
+                                    "Tick recordings on the Project tab first.")
+            return
+        if not self.ensure_frame_times(queue):
             return
         proj = self.project
         model = proj.model
@@ -1285,8 +1322,7 @@ class MainWindow(QMainWindow):
             from somnus.predict import load_model
             frames = []
             comp = []
-            picked = [r for r in proj.recordings if r.selected] or proj.recordings
-            for r in picked:
+            for r in queue:
                 st = core.LabelStore(proj, r.name)
                 if st.n_manual() == 0:
                     continue
@@ -1330,10 +1366,11 @@ class MainWindow(QMainWindow):
             with contextlib.redirect_stdout(buf):
                 res = F.finetune(art, df, lam=lam, adapt_A=adapt, verbose=True)
             log(buf.getvalue())
-            n_existing = len([f for f in os.listdir(proj.models_dir)
-                              if f.startswith("finetuned") and f.endswith(".json")])
+            import re
+            nums = [int(m.group(1)) for f in os.listdir(proj.models_dir)
+                    if (m := re.match(r"finetuned_(\d+)\.json$", f))]
             out = os.path.join(proj.models_dir,
-                               f"finetuned_{n_existing + 1:02d}.json")
+                               f"finetuned_{max(nums, default=0) + 1:02d}.json")
             import json
             with open(out, "w") as fh:
                 json.dump(res["artifact"], fh, indent=2)

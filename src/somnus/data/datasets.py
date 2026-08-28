@@ -1,6 +1,6 @@
 """Load one recording and turn it into the per-epoch feature table.
 
-From `featurize()`. give it an EDF, plus optionally a scoring file
+From `featurize()`: give it an EDF, plus optionally a scoring file
 and video tracking, and it returns the table `somnus.predict.predict()` reads.
 What the recording can actually measure is worked out from the data itself, and
 anything beyond that is left blank, so one model handles recordings of very
@@ -40,21 +40,6 @@ from somnus import features as H
 mne.set_log_level("ERROR")
 
 BIDS_STAGE_MAP = {"1": "Wake", "2": "NREM", "3": "REM"}  # 4 = Artifact -> None
-STATES = ["Wake", "NREM", "REM"]
-
-
-# ---- model feature layout ---------------------------------------------------
-UNIVERSAL = ["delta_rel", "theta_rel", "alpha_rel", "beta_rel",
-             "theta_delta_log", "t1_power_log_z", "emg_low_log_z"]
-# optional block -> (columns, indicator name)
-OPTIONAL = {
-    "tier2":    (["gamma1_ratio_log"], "has_tier2"),
-    "tier3":    (["gamma2_ratio_log"], "has_tier3"),
-    "tier4":    (["gamma3_ratio_log"], "has_tier4"),
-    "emg_mid":  (["emg_mid_log_z", "emg_ratio_hi_lo"], "has_emg_mid"),
-    "emg_high": (["emg_high_log_z"], "has_emg_high"),
-    "video":    (["log_velocity_z"], "has_video"),
-}
 CONTEXT_WINDOWS = (3, 15)
 
 
@@ -130,7 +115,7 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
     A DeepLabCut file usually tracks many bodyparts. The one named
     ``mouse_center``, as in the default DLC model, is used; 
     if the file has exactly one bodypart that is used
-    instead. Otherwise it asks.
+    instead. Otherwise it refuses.
     """
     ext = os.path.splitext(path)[1].lower()
 
@@ -217,6 +202,8 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
       5. evenly spaced across the recording.
     """
     cands = sorted(glob.glob(os.path.join(search_dir, base + "*timestamps.npy")))
+    cands = [c for c in cands
+             if not os.path.basename(c)[len(base):len(base) + 1].isalnum()]
     mismatched = []
     for cand in cands:
         t = np.load(cand, allow_pickle=True).ravel().astype(float)
@@ -342,7 +329,8 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
 # ------------------------------------------------------------- featurization
 def featurize(entry: dict, probe_seconds: float = 900.0,
               mm_per_px: float | None = None,
-              eeg_chan=None, emg_chan=None) -> pd.DataFrame:
+              eeg_chan=None, emg_chan=None,
+              assume_frame_times: bool = False) -> pd.DataFrame:
     """Read one recording and return its per-epoch feature table.
 
     Opens the EDF, picks the best EEG channel, works out what the recording can
@@ -350,11 +338,15 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     Manual scoring and video tracking are used if given and skipped if not.
 
     See resolve_frame_times() for how frame times are found, and where `video`
-    and `cache_dir` fit in.
+    and `cache_dir` fit in. If the tracking's frame times would have to be
+    assumed rather than measured, scoring stops unless `assume_frame_times`
+    says to go ahead.
     """
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
     eeg_chan = eeg_chan if eeg_chan is not None else entry.get("eeg_chan")
     emg_chan = emg_chan if emg_chan is not None else entry.get("emg_chan")
+    assume_frame_times = assume_frame_times or bool(
+        entry.get("assume_frame_times"))
     raw = mne.io.read_raw_edf(entry["edf"], preload=False)
     sfreq = float(raw.info["sfreq"])
     names = raw.ch_names
@@ -366,8 +358,18 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
         with open(entry["channels"]) as fh:
             for row in csv.DictReader(fh, delimiter="\t"):
                 types_map[row["name"]] = row.get("type", "").upper()
-        eeg_names = [c for c in names if types_map.get(c) == "EEG"] or names[:-1]
-        emg_names = [c for c in names if types_map.get(c) == "EMG"] or [names[-1]]
+        eeg_names = [c for c in names if types_map.get(c) == "EEG"]
+        emg_names = [c for c in names if types_map.get(c) == "EMG"]
+        if not eeg_names:
+            eeg_names = names[:-1]
+            print(f"[channels] {entry['recording']}: no channel typed EEG in "
+                  f"{os.path.basename(entry['channels'])}; assuming "
+                  f"{', '.join(eeg_names)}")
+        if not emg_names:
+            emg_names = [names[-1]]
+            print(f"[channels] {entry['recording']}: no channel typed EMG in "
+                  f"{os.path.basename(entry['channels'])}; assuming "
+                  f"{emg_names[0]!r}")
         eeg_idx = [names.index(c) for c in eeg_names]
         emg_i = names.index(emg_names[0])
 
@@ -396,6 +398,12 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
             os.path.dirname(entry["pkl"]),
             video=entry.get("video"), cache_dir=entry.get("cache_dir"))
         if vel_warn:
+            if not assume_frame_times:
+                raise ValueError(
+                    f"{vel_warn} To go ahead with assumed timing, pass "
+                    f"assume_frame_times=True (--assume-frame-times on the "
+                    f"command line); to score without velocity, drop the "
+                    f"tracking file from the entry.")
             print(f"[velocity] {vel_warn}")
         vel = H.velocity_features(coords, t, n_ep)
         if mm_per_px:

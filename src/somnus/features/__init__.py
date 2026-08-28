@@ -13,7 +13,7 @@ Every recording supports tier 1, which is why one model can score all of them.
     tier 1   up to 25 Hz    delta, theta, alpha, beta   (every recording)
     tier 2   25-45 Hz       high beta / low gamma
     tier 3   45-63 Hz       gamma
-    tier 4   63-150 Hz      high gamma and wideband EMG (high-rate rigs only)
+    tier 4   63-150 Hz      high gamma (high-rate rigs only)
 
 Band powers are given relative to the tier-1 total, so they mean the same thing
 whether or not the higher tiers exist.
@@ -62,7 +62,6 @@ TIER_TOP = {1: TIER1_TOP, 2: 45.0, 3: 63.0, 4: 150.0}
 # samples fast enough to reach 300 Hz.
 EMG_BANDS = {"emg_low": (5.0, 25.0), "emg_mid": (30.0, 63.0),
              "emg_high": (63.0, 300.0)}
-EMG_TIER = {"emg_low": 1, "emg_mid": 3, "emg_high": 4}
 
 MAINS_HZ = (50.0, 60.0, 100.0, 120.0, 150.0, 180.0)
 MAINS_HALFWIDTH = 1.5
@@ -78,16 +77,6 @@ AMPLITUDE_FEATURES = ["t1_power_log", "emg_low_log", "emg_mid_log",
 RATIO_FEATURES = ([f"{b}_rel" for b in TIER1_ORDER]
                   + ["theta_delta_log", "delta_index", "emg_ratio_hi_lo"]
                   + [f"{TIER_BANDS[t][0]}_ratio_log" for t in (2, 3, 4)])
-
-# Features that not every recording can supply, each paired with the column
-# that records whether this one could. Lets the model tell "no movement" from
-# "no camera".
-OPTIONAL_BLOCKS = {
-    "tier2": ["gamma1_ratio_log"],
-    "tier3": ["gamma2_ratio_log", "emg_mid_log"],
-    "tier4": ["gamma3_ratio_log", "emg_high_log"],
-    "video": ["log_velocity"],
-}
 
 
 # ---------------------------------------------------------------- bandwidth
@@ -420,6 +409,14 @@ def labels_from_onehot(df: pd.DataFrame, n_epochs: int, bin_sec: float = 0.5,
     never used to train it.
     """
     per = int(round(epoch_sec / bin_sec))
+    if "Time_sec" in df.columns and len(df) > 1:
+        t = df["Time_sec"].to_numpy(dtype=float)
+        step = float(np.median(np.diff(t)))
+        if not np.isclose(step, bin_sec, rtol=0.01) or abs(t[0]) > bin_sec / 2:
+            raise ValueError(
+                f"scoring rows must be contiguous {bin_sec:g} s bins starting "
+                f"at 0 s; this file starts at {t[0]:g} s with a {step:g} s "
+                f"step, so its labels would land on the wrong epochs")
     have = [c for c in state_cols if c in df.columns]
     excl = [c for c in exclude_cols if c in df.columns]
     V = df[have].to_numpy()

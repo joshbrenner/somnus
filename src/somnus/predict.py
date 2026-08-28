@@ -9,13 +9,14 @@ then the sequence is smoothed over time: a lone epoch of REM in the middle of Wa
 is far more likely to be a mistake than a real event.
 
 Using it from Python:
-    from somnus import load_model, predict
+    from somnus import load_model
+    from somnus.predict import predict
     art = load_model()                 # the model that ships with Somnus
     labels, proba = predict(art, feature_df)
 
 Using it from the command line:
-    python -m somnus.predict --score myrec.edf
-    python -m somnus.predict --score myrec.edf --out scored.csv
+    python -m somnus.predict --score myrec.edf --eeg 0 1 2 --emg 3
+    python -m somnus.predict --score myrec.edf --eeg 0 1 2 --emg 3 --out scored.csv
 """
 from __future__ import annotations
 
@@ -162,11 +163,11 @@ def predict(art: dict, df: pd.DataFrame, decode: bool = True,
     """
     p = probabilities(art, df)
     states = np.array(art["states"])
-    if not decode:
+    if not decode or not len(p):
         return states[p.argmax(axis=1)], p
     A = scale_transitions(np.asarray(art["transition_matrix"]), stickiness)
     path = viterbi(np.log(np.clip(p, 1e-12, None)), A,
-                   np.asarray(art["log_prior"]))
+                   np.asarray(art["log_prior"]) * float(stickiness))
     return states[path], p
 
 
@@ -195,6 +196,16 @@ def main() -> None:
                     help="optional one-hot scoring CSV, to report agreement")
     ap.add_argument("--coords", default=None,
                     help="optional video tracking coordinates (.pkl)")
+    ap.add_argument("--eeg", nargs="+", default=None, metavar="CHAN",
+                    type=lambda v: int(v) if v.isdigit() else v,
+                    help="the EEG channel(s), as names or numbers; the "
+                         "cleanest is used")
+    ap.add_argument("--emg", default=None, metavar="CHAN",
+                    type=lambda v: int(v) if v.isdigit() else v,
+                    help="the EMG channel, as a name or number")
+    ap.add_argument("--assume-frame-times", action="store_true",
+                    help="allow tracking whose frame times can only be "
+                         "assumed, not measured")
     ap.add_argument("--out", default=None, help="write predictions to this CSV")
     ap.add_argument("--no-decode", action="store_true",
                     help="skip the HMM decode (raw per-epoch argmax only)")
@@ -208,13 +219,14 @@ def main() -> None:
 
     art = load_model(args.model)
     if not os.path.exists(args.score):
-        print(f"No such recording: {args.score}")
-        return
+        raise SystemExit(f"No such recording: {args.score}")
     name = os.path.splitext(os.path.basename(args.score))[0]
 
     df = B.featurize({"recording": name, "edf": args.score, "dataset": "user",
                       "group": "user", "subject": name.split("_")[0],
-                      "scored": args.scored, "pkl": args.coords})
+                      "scored": args.scored, "pkl": args.coords},
+                     eeg_chan=args.eeg, emg_chan=args.emg,
+                     assume_frame_times=args.assume_frame_times)
     labels, p = predict(art, df, decode=not args.no_decode,
                         stickiness=args.stickiness)
     print(f"Scored {name}: {len(df)} epochs")

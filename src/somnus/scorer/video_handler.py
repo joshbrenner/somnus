@@ -98,7 +98,8 @@ class VideoHandler:
     def _generate_cfr_fallback(self):
         """Generates a linear array assuming perfectly stable framerate."""
         print("VideoHandler: Falling back to linear CFR timestamp generation.")
-        duration = float(self.stream.duration * av.time_base) if self.stream.duration else 0.0
+        duration = (float(self.stream.duration * self.stream.time_base)
+                    if self.stream.duration else 0.0)
         frame_count = self.stream.frames or int(duration * self.nominal_fps)
         if frame_count <= 0: frame_count = 1000 
         return np.linspace(0.0, duration, frame_count, dtype=np.float64)

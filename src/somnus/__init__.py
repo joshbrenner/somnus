@@ -11,6 +11,9 @@ The desktop application: ``somnus-gui`` (or ``python -m somnus.gui``).
 """
 __version__ = "1.0.0"
 
-# NOTE: only load_model is re-exported here. Re-exporting the predict()
-# function as well would shadow the somnus.predict submodule attribute.
-from somnus.predict import load_model  # noqa: F401
+
+def __getattr__(name):
+    if name == "load_model":
+        from somnus.predict import load_model
+        return load_model
+    raise AttributeError(f"module 'somnus' has no attribute {name!r}")

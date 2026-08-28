@@ -118,7 +118,7 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
     if n_samples == 0: return img
     
     ch_h = h // n_ch
-    t_scale = w / n_samples
+    t_scale = w / (window_duration * sfreq)
     
     overlay = img.copy()
     end_time_sec = window_start_sec + window_duration
