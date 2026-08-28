@@ -184,37 +184,40 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
         label = f"{ch_names[i]} (x{current_gain:.1f})"
         cv2.putText(img, label, (5, i * ch_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
 
-        if i == n_ch - 1: 
-            bar_x = w - 15; bar_y = (i + 1) * ch_h - 15
-            
+        # a voltage bar on the last EEG row (tracks the EEG gain) and on the
+        # EMG row (tracks the EMG gain); the time bar only on the bottom row
+        if i in (num_eeg - 1, n_ch - 1):
+            bar_x = w - 20; bar_y = (i + 1) * ch_h - 15
+
             effective_v_range = v_range / current_gain
             volts_per_pixel = effective_v_range / ch_h
-            target_v_size = effective_v_range * 0.25 
-            
+            target_v_size = effective_v_range * 0.25
+
             if target_v_size < 1e-6: unit, mult = "nV", 1e9
             elif target_v_size < 1e-3: unit, mult = "uV", 1e6
             else: unit, mult = "mV", 1e3
-            
+
             nice_val_units = get_nice_number(target_v_size * mult, round_up=True)
             nice_val_volts = nice_val_units / mult
             pixel_height = int(nice_val_volts / volts_per_pixel)
-            
-            seconds_per_pixel = window_duration / w
-            target_t_size = 20 * seconds_per_pixel 
-            nice_t_val = get_nice_number(target_t_size, round_up=True)
-            pixel_width = int(nice_t_val / seconds_per_pixel)
-            
-            color = (180, 180, 180)
+
+            color = (240, 240, 240)
             cv2.line(img, (bar_x, bar_y), (bar_x, bar_y - pixel_height), color, 2)
-            cv2.line(img, (bar_x, bar_y), (bar_x - pixel_width, bar_y), color, 2)
-            cv2.putText(img, f"{int(nice_val_units)} {unit}", (bar_x - 50, bar_y - pixel_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            
-            if nice_t_val >= 1.0: t_label = f"{nice_t_val:.1f}s".replace(".0s", "s")
-            elif nice_t_val >= 0.1: t_label = f"{nice_t_val:.2f}s" 
-            elif nice_t_val >= 0.001: t_label = f"{int(nice_t_val * 1000)}ms"
-            else: t_label = f"{nice_t_val * 1e6:.0f}us"
-                
-            cv2.putText(img, t_label, (bar_x - pixel_width - 5, bar_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            cv2.putText(img, f"{int(nice_val_units)} {unit}", (bar_x - 55, bar_y - pixel_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+            if i == n_ch - 1:
+                seconds_per_pixel = window_duration / w
+                target_t_size = 20 * seconds_per_pixel
+                nice_t_val = get_nice_number(target_t_size, round_up=True)
+                pixel_width = int(nice_t_val / seconds_per_pixel)
+                cv2.line(img, (bar_x, bar_y), (bar_x - pixel_width, bar_y), color, 2)
+
+                if nice_t_val >= 1.0: t_label = f"{nice_t_val:.1f}s".replace(".0s", "s")
+                elif nice_t_val >= 0.1: t_label = f"{nice_t_val:.2f}s"
+                elif nice_t_val >= 0.001: t_label = f"{int(nice_t_val * 1000)}ms"
+                else: t_label = f"{nice_t_val * 1e6:.0f}us"
+
+                cv2.putText(img, t_label, (bar_x - pixel_width - 5, bar_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
     return img
 
