@@ -22,11 +22,32 @@ frequency of state transitions.
 
 ## Install
 
+Install somnus in a virtual environment using conda, with a python version > 3.12:
 ```bash
+conda create -n somnus-eeg python=3.13 -y
+conda activate somnus-eeg
 pip install somnus-eeg
 ```
+## The desktop GUI
 
-## Quickstart — score a recording in Python
+To start the GUI, use:
+
+```bash
+somnus-gui
+```
+
+The GUI includes a five-tab workflow: **Project** (point it at a folder of recordings) →
+**Score** (batch scoring with smoothing controls) → **Review & Relabel**
+(whole-recording hypnogram with a confidence trace, plus a signal/video scorer
+pre-loaded with the model's labels, so you correct rather than score from
+scratch) → **Fine-tune** (adapt the model to your corrections) → **Evaluate**
+(compare against the base model; export sleep-architecture statistics).
+
+Two notes: **source data is never written to**, and
+**the model never trains on its own output** — every epoch records where its
+label came from, and only manually sourced labels can become training targets.
+
+## Alternative -- Score a recording in Python
 
 ```python
 from somnus import load_model
@@ -75,23 +96,6 @@ passing the file.
 `*_timestamps.npy` beside the tracking file with exactly one timestamp per row.
 Cameras drop frames, so assuming a constant frame rate can misplace positions by
 minutes; if no timestamps file is found, Somnus requires confirmation.
-
-## The desktop application
-
-```bash
-somnus-gui
-```
-
-A five-tab workflow: **Project** (point it at a folder of recordings) →
-**Score** (batch scoring with smoothing controls) → **Review & Relabel**
-(whole-recording hypnogram with a confidence trace, plus a signal/video scorer
-pre-loaded with the model's labels, so you correct rather than score from
-scratch) → **Fine-tune** (adapt the model to your corrections) → **Evaluate**
-(compare against the base model; export sleep-architecture statistics).
-
-Two notes: **source data is never written to**, and
-**the model never trains on its own output** — every epoch records where its
-label came from, and only manually sourced labels can become training targets.
 
 ## Fine-tuning
 
