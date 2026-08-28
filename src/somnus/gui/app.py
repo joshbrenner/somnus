@@ -378,9 +378,9 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
 
         tick_note = QLabel(
-            "<b>Tick the recordings you want to work with.</b> The Score tab "
-            "processes everything ticked; fine-tuning uses the ticked "
-            "recordings that have manual labels.")
+            "<b>Tick the recordings you want to work with.</b> The Score and "
+            "Evaluate tabs process everything ticked; fine-tuning has its own "
+            "list.")
         tick_note.setWordWrap(True)
         lay.addWidget(tick_note)
 
@@ -593,6 +593,29 @@ class MainWindow(QMainWindow):
             "normal-sleep training set. It trains only on <b>manually sourced</b> "
             "labels; model predictions are never used as training targets.")
         info.setWordWrap(True); lay.addWidget(info)
+
+        ft_note = QLabel("<b>Manually labeled recordings</b> — fine-tuning "
+                         "trains on everything ticked here.")
+        ft_note.setWordWrap(True); lay.addWidget(ft_note)
+        self.tbl_ft = QTableWidget(0, 6)
+        self.tbl_ft.setHorizontalHeaderLabels(
+            ["use", "recording", "corrected", "confirmed", "imported",
+             "manual epochs"])
+        fh = self.tbl_ft.horizontalHeader()
+        fh.setSectionResizeMode(QHeaderView.Interactive)
+        fh.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl_ft.setColumnWidth(0, 40)
+        self.tbl_ft.setMaximumHeight(170)
+        self.tbl_ft.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tbl_ft.itemChanged.connect(self.on_ft_item_changed)
+        lay.addWidget(self.tbl_ft)
+        rowsel = QHBoxLayout()
+        b_fall = QPushButton("Select all")
+        b_fall.clicked.connect(lambda: self.on_ft_check_all(True))
+        b_fnone = QPushButton("Select none")
+        b_fnone.clicked.connect(lambda: self.on_ft_check_all(False))
+        rowsel.addWidget(b_fall); rowsel.addWidget(b_fnone); rowsel.addStretch(1)
+        lay.addLayout(rowsel)
 
         box = QGroupBox("Settings"); form = QFormLayout(box)
         self.cmb_lam = QComboBox()
@@ -1004,6 +1027,7 @@ class MainWindow(QMainWindow):
             self.tbl.setItem(row, 6, nh)
         self.tbl.blockSignals(False)
         self._update_nsel()
+        self.refresh_finetune_list()
 
     def on_tbl_item_changed(self, item: QTableWidgetItem):
         """Keep the project in step when a row is ticked or renamed."""
@@ -1299,9 +1323,15 @@ class MainWindow(QMainWindow):
             vel = ("log_velocity" in d["feat"].columns
                    and bool(np.isfinite(d["feat"]["log_velocity"]
                                         .to_numpy(dtype=float)).any()))
+            if not vel:
+                tag = "[no velocity]"
+            elif r.frame_times_measured:
+                tag = "[velocity: frame timing measured]"
+            else:
+                tag = "[velocity: frame timing assumed]"
             lines += [
                 f"{r.name}: {len(lab)} epochs ({arch['recording_hours']:.2f} h)"
-                f"{'   [velocity used]' if vel else '   [no velocity]'}",
+                f"   {tag}",
                 f"   Wake {arch['pct_Wake']:5.1f}%  NREM {arch['pct_NREM']:5.1f}%"
                 f"  REM {arch['pct_REM']:5.1f}%",
                 f"   bouts  W {arch['bouts_Wake']}  N {arch['bouts_NREM']}  "
@@ -1343,6 +1373,9 @@ class MainWindow(QMainWindow):
         self.lbl_qinfo.setText("")
         self.lbl_launch.setText("")
         self._update_truth_button()
+        self._ft_stamp = None
+        self._ft_selected = {}
+        self.tbl_ft.setRowCount(0)
 
     def load_for_review(self, name: str):
         d = getattr(self, "scored", {}).get(name)
@@ -1498,14 +1531,89 @@ class MainWindow(QMainWindow):
         self.log(msg)
 
     # -------------------------------------------------------------- fine-tune
+    def refresh_finetune_list(self):
+        """List every recording with manual labels, keeping the user's ticks.
+
+        A recording that gained labels since the last refresh is ticked; on
+        the first fill only the most recently labeled one is.
+        """
+        if not self.project:
+            return
+        rows = []
+        for r in self.project.recordings:
+            st = core.LabelStore(self.project, r.name)
+            if st.n_manual() == 0:
+                continue
+            h = st.df.loc[st.manual_mask(), "updated"].dropna()
+            rows.append((r.name, st.n_corrected(), st.n_confirmed(),
+                         st.n_imported(), st.n_manual(),
+                         str(h.max()) if len(h) else ""))
+        prev = getattr(self, "_ft_stamp", None)
+        sel = getattr(self, "_ft_selected", {})
+        latest = max(rows, key=lambda t: t[5])[0] if rows else None
+        stamps = {}
+        for name, *_, stamp in rows:
+            stamps[name] = stamp
+            if prev is None:
+                sel[name] = name == latest
+            elif stamp != prev.get(name):
+                sel[name] = True
+            elif name not in sel:
+                sel[name] = False
+        self._ft_stamp = stamps
+        self._ft_selected = {n: v for n, v in sel.items() if n in stamps}
+
+        self.tbl_ft.blockSignals(True)
+        self.tbl_ft.setRowCount(0)
+        for name, n_cor, n_con, n_imp, n_man, _stamp in rows:
+            row = self.tbl_ft.rowCount(); self.tbl_ft.insertRow(row)
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                         | Qt.ItemIsSelectable)
+            chk.setCheckState(Qt.Checked if self._ft_selected.get(name)
+                              else Qt.Unchecked)
+            self.tbl_ft.setItem(row, 0, chk)
+            self.tbl_ft.setItem(row, 1, QTableWidgetItem(name))
+            for col, v in ((2, n_cor), (3, n_con), (4, n_imp), (5, n_man)):
+                it = QTableWidgetItem(str(v))
+                it.setTextAlignment(Qt.AlignCenter)
+                self.tbl_ft.setItem(row, col, it)
+        self.tbl_ft.blockSignals(False)
+
+    def on_ft_item_changed(self, item: QTableWidgetItem):
+        """Remember a tick made in the fine-tune list."""
+        if item.column() != 0:
+            return
+        name_item = self.tbl_ft.item(item.row(), 1)
+        if name_item is not None:
+            self._ft_selected[name_item.text()] = \
+                item.checkState() == Qt.Checked
+
+    def on_ft_check_all(self, on: bool):
+        """Tick or untick every recording in the fine-tune list."""
+        for row in range(self.tbl_ft.rowCount()):
+            self.tbl_ft.item(row, 0).setCheckState(
+                Qt.Checked if on else Qt.Unchecked)
+
+    def ft_checked(self) -> list[core.Recording]:
+        """The recordings ticked in the fine-tune list."""
+        out = []
+        for row in range(self.tbl_ft.rowCount()):
+            if self.tbl_ft.item(row, 0).checkState() == Qt.Checked:
+                r = self.project.get(self.tbl_ft.item(row, 1).text())
+                if r is not None:
+                    out.append(r)
+        return out
+
     def on_finetune(self):
         """Adapt the model to the corrections made so far."""
         if not self.project or self.runner.busy():
             return
-        queue = self.checked()
+        queue = self.ft_checked()
         if not queue:
             QMessageBox.information(self, "Nothing selected",
-                                    "Tick recordings on the Project tab first.")
+                                    "Tick recordings with manual labels in "
+                                    "the list above.")
             return
         if not self.ensure_frame_times(queue):
             return

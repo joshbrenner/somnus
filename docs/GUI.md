@@ -19,10 +19,10 @@ Five tabs: **Project → Score → Review & Relabel → Fine-tune → Evaluate**
 ## Tabs
 
 **Project** — name the project on creation, add recordings from a folder, then
-tick the ones you want to work with. The Score tab processes exactly what is ticked, 
-and fine-tuning uses the ticked recordings that carry manual labels. Selection persists in
+tick the ones you want to work with. The Score and Evaluate tabs process
+exactly what is ticked; fine-tuning has its own list. Selection persists in
 `project.json`. Each row shows the paths found for labels, video and tracking,
-plus whether velocity is available.
+plus whether frame timing is measured or assumed.
 
 **Score** 
 
@@ -53,11 +53,13 @@ scorer (see below); **Load true labels** pulls the results back in.
 
 Both export to CSV.
 
-**Fine-tune** — trains on manual labels only, from the ticked recordings.
-λ is either fixed or chosen by cross-validation. Reports held-out before/after,
-and only offers to activate the new model if it actually beat the base model out
-of sample. Each run writes a new
-`models/finetuned_NN.json` so earlier models stay comparable in the Evaluate tab.
+**Fine-tune** — lists every recording with manual labels and trains on the
+ticked ones (a recording you have just labeled is ticked for you). λ is either
+fixed or chosen by leave-one-recording-out cross-validation over that set, and
+the transition matrix adapts to it too. Reports held-out before/after, and only
+offers to activate the new model if it actually beat the base model out of
+sample. Each run writes a new `models/finetuned_NN.json` so earlier models stay
+comparable in the Evaluate tab.
 
 ## The scorer hand-off
 
