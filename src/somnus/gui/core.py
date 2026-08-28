@@ -194,13 +194,13 @@ def channel_names(edf: str) -> list[str]:
 def suggest_channels(edf: str) -> tuple[list[int], int | None]:
     """A starting assignment to show the user: everything but the last is EEG.
 
-    Only a suggestion for the boxes on the Project tab, which the user is
-    expected to check. 
+    Channels are numbered from 1. Only a suggestion for the boxes on the
+    Project tab, which the user is expected to check.
     """
     n = len(channel_names(edf))
     if n < 2:
-        return list(range(n)), None
-    return list(range(n - 1)), n - 1
+        return list(range(1, n + 1)), None
+    return list(range(1, n)), n
 
 
 def discover_recordings(folder: str) -> list[Recording]:

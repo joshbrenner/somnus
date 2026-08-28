@@ -15,8 +15,8 @@ Using it from Python:
     labels, proba = predict(art, feature_df)
 
 Using it from the command line:
-    python -m somnus.predict --score myrec.edf --eeg 0 1 2 --emg 3
-    python -m somnus.predict --score myrec.edf --eeg 0 1 2 --emg 3 --out scored.csv
+    python -m somnus.predict --score myrec.edf --eeg 1 2 3 --emg 4
+    python -m somnus.predict --score myrec.edf --eeg 1 2 3 --emg 4 --out scored.csv
 """
 from __future__ import annotations
 
@@ -198,11 +198,11 @@ def main() -> None:
                     help="optional video tracking coordinates (.pkl)")
     ap.add_argument("--eeg", nargs="+", default=None, metavar="CHAN",
                     type=lambda v: int(v) if v.isdigit() else v,
-                    help="the EEG channel(s), as names or numbers; the "
-                         "cleanest is used")
+                    help="the EEG channel(s), as names or numbers counted "
+                         "from 1; the cleanest is used")
     ap.add_argument("--emg", default=None, metavar="CHAN",
                     type=lambda v: int(v) if v.isdigit() else v,
-                    help="the EMG channel, as a name or number")
+                    help="the EMG channel, as a name or number counted from 1")
     ap.add_argument("--assume-frame-times", action="store_true",
                     help="allow tracking whose frame times can only be "
                          "assumed, not measured")

@@ -58,12 +58,12 @@ art = load_model()                      # the packaged v1.0 model
 df = featurize({"recording": "myrec", "edf": "path/to/myrec.edf",
                 "dataset": "user", "group": "user", "subject": "m1",
                 "scored": None, "pkl": None},
-               eeg_chan=[0, 1, 2], emg_chan=3)
+               eeg_chan=[1, 2, 3], emg_chan=4)
 labels, proba = predict(art, df)        # per-epoch states + probabilities
 ```
 
-`eeg_chan` and `emg_chan` set which channels are which, by number or by name.
-When several EEG channels are named, the best snr is used.
+`eeg_chan` and `emg_chan` set which channels are which, by number (counted
+from 1) or by name. When several EEG channels are named, the best snr is used.
 
 `predict(..., stickiness=...)` controls the temporal decode: `0` disables
 smoothing, `1` uses the transition matrix as estimated, `>1` enforces longer

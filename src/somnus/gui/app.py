@@ -59,6 +59,9 @@ class Worker(QObject):
         try:
             self.kw["log"] = self.progress.emit
             self.finished.emit(self.fn(*self.a, **self.kw))
+        except RuntimeError as e:
+            # jobs raise RuntimeError deliberately to talk to the user
+            self.failed.emit(str(e))
         except Exception:
             self.failed.emit(traceback.format_exc())
 
@@ -279,7 +282,8 @@ class MainWindow(QMainWindow):
         self.status = self.statusBar()
         self.status.setSizeGripEnabled(True)
         self.status.showMessage("Create or open a project to begin.")
-        self._set_enabled(False)
+        self._chan_names = {}
+        self._update_gates()
 
     # ------------------------------------------------------------- log helper
     def log(self, msg: str) -> None:
@@ -289,9 +293,22 @@ class MainWindow(QMainWindow):
         if lines:
             self.status.showMessage(lines[-1][:140])
 
-    def _set_enabled(self, on: bool) -> None:
-        for i in (1, 2, 3, 4):
-            self.tabs.setTabEnabled(i, on)
+    def _update_gates(self) -> None:
+        """Grey out whatever the current state cannot use yet."""
+        p = self.project
+        for w in (self.b_add, self.ed_eeg, self.ed_emg, self.tbl,
+                  self.b_all, self.b_none):
+            w.setEnabled(p is not None)
+        sel = self.checked()
+        self.tabs.setTabEnabled(1, bool(sel))
+        has_labels = bool(self.scored) or (p is not None and any(
+            os.path.exists(os.path.join(p.labels_dir, f"{r.name}_labels.csv"))
+            for r in sel))
+        for i in (2, 3, 4):
+            self.tabs.setTabEnabled(i, bool(has_labels))
+        self.b_proceed.setEnabled(bool(sel))
+        self.b_proceed.setStyleSheet(
+            "background-color:#1a7f37; color:white;" if sel else "")
 
     # ------------------------------------------------------------ Project tab
     def _tab_project(self) -> QWidget:
@@ -300,10 +317,10 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         b_new = QPushButton("New project…"); b_new.clicked.connect(self.on_new)
         b_open = QPushButton("Open project…"); b_open.clicked.connect(self.on_open)
-        b_add = QPushButton("Add recordings from folder…")
-        b_add.clicked.connect(self.on_add_folder)
+        self.b_add = QPushButton("Add recordings from folder…")
+        self.b_add.clicked.connect(self.on_add_folder)
         self.lbl_proj = QLabel("<i>no project</i>")
-        for b in (b_new, b_open, b_add):
+        for b in (b_new, b_open, self.b_add):
             row.addWidget(b)
         row.addStretch(1); row.addWidget(self.lbl_proj)
         lay.addLayout(row)
@@ -321,16 +338,17 @@ class MainWindow(QMainWindow):
         cl = QHBoxLayout(chan)
         cl.addWidget(QLabel("EEG:"))
         self.ed_eeg = QLineEdit()
-        self.ed_eeg.setPlaceholderText("e.g. 0, 1, 2")
+        self.ed_eeg.setPlaceholderText("e.g. 1, 2, 3")
         self.ed_eeg.setMaximumWidth(140)
-        self.ed_eeg.setToolTip("Channel numbers to consider for EEG, separated "
-                               "by commas. The cleanest of them is used.")
+        self.ed_eeg.setToolTip("Channel numbers to consider for EEG, counted "
+                               "from 1 and separated by commas. The cleanest "
+                               "of them is used.")
         cl.addWidget(self.ed_eeg)
         cl.addWidget(QLabel("   EMG:"))
         self.ed_emg = QLineEdit()
-        self.ed_emg.setPlaceholderText("e.g. 3")
+        self.ed_emg.setPlaceholderText("e.g. 4")
         self.ed_emg.setMaximumWidth(70)
-        self.ed_emg.setToolTip("The single channel carrying EMG.")
+        self.ed_emg.setToolTip("The single channel carrying EMG, counted from 1.")
         cl.addWidget(self.ed_emg)
         self.lbl_chan = QLabel("")
         self.lbl_chan.setWordWrap(True)
@@ -342,7 +360,7 @@ class MainWindow(QMainWindow):
         self.tbl = QTableWidget(0, 7)
         self.tbl.setHorizontalHeaderLabels(
             ["use", "recording", "labels", "video", "tracking",
-             "velocity", "manual epochs"])
+             "frame timing", "manual epochs"])
         hh = self.tbl.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -360,11 +378,14 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.tbl, 3)
 
         sp = QHBoxLayout()
-        b_all = QPushButton("Select all"); b_all.clicked.connect(
+        self.b_all = QPushButton("Select all"); self.b_all.clicked.connect(
             lambda: self.on_check_all(True))
-        b_none = QPushButton("Select none"); b_none.clicked.connect(
+        self.b_none = QPushButton("Select none"); self.b_none.clicked.connect(
             lambda: self.on_check_all(False))
-        sp.addWidget(b_all); sp.addWidget(b_none)
+        self.b_proceed = QPushButton("Proceed to Score →")
+        self.b_proceed.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
+        sp.addWidget(self.b_all); sp.addWidget(self.b_none)
+        sp.addWidget(self.b_proceed)
         self.lbl_nsel = QLabel(""); sp.addWidget(self.lbl_nsel)
         sp.addStretch(1)
         lay.addLayout(sp)
@@ -825,29 +846,47 @@ class MainWindow(QMainWindow):
 
     def on_add_folder(self):
         """Add every recording found in a folder to the project."""
-        if not self.project:
+        if not self.project or self.runner.busy():
             return
         d = QFileDialog.getExistingDirectory(self, "Folder containing EDF "
                                                   "recordings (read-only)")
         if not d:
             return
-        found = core.discover_recordings(d)
-        have = {r.name for r in self.project.recordings}
-        new = [r for r in found if r.name not in have]
-        self.project.recordings.extend(new)
+        proj = self.project
+        have = {r.name for r in proj.recordings}
+        want_suggestion = not proj.eeg_chan
+
+        def job(log):
+            log(f"scanning {d} …")
+            new = [r for r in core.discover_recordings(d) if r.name not in have]
+            sugg = None
+            if new and want_suggestion:
+                try:
+                    sugg = core.suggest_channels(new[0].edf)
+                except Exception as e:
+                    log(f"could not read channels from {new[0].name}: {e}")
+            return dict(kind="add_folder", folder=d, new=new, sugg=sugg)
+
+        self.b_add.setEnabled(False)
+        self.runner.start(job, self.after_add_folder, self.log)
+
+    @Slot(object)
+    def after_add_folder(self, res):
+        """Put the discovered recordings into the project."""
+        self.b_add.setEnabled(True)
+        if not isinstance(res, dict) or res.get("kind") != "add_folder":
+            return
+        self.project.recordings.extend(res["new"])
         # Fill the channel boxes from the first recording, so there is something
         # concrete to check rather than two empty fields.
-        if new and not self.project.eeg_chan:
-            try:
-                eeg, emg = core.suggest_channels(new[0].edf)
-                self.project.eeg_chan, self.project.emg_chan = eeg, emg
-                self.log(f"channels suggested: EEG {eeg}, EMG {emg} — "
-                         f"check these on the Project tab before scoring")
-            except Exception as e:
-                self.log(f"could not read channels from {new[0].name}: {e}")
+        if res["sugg"]:
+            eeg, emg = res["sugg"]
+            self.project.eeg_chan, self.project.emg_chan = eeg, emg
+            self.log(f"channels suggested: EEG {eeg}, EMG {emg} — "
+                     f"check these on the Project tab before scoring")
         self.project.save()
         self.refresh_project(); self.refresh_score_list()
-        self.log(f"added {len(new)} recording(s) from {d}")
+        self.log(f"added {len(res['new'])} recording(s) from {res['folder']}")
 
     def refresh_project(self):
         """Redraw the project table from the project on disk."""
@@ -880,10 +919,18 @@ class MainWindow(QMainWindow):
             self.tbl.setItem(row, 2, path_cell(r.scored))
             self.tbl.setItem(row, 3, path_cell(r.video))
             self.tbl.setItem(row, 4, path_cell(r.coords))
-            vel = QTableWidgetItem("yes" if r.has_velocity else "no")
+            if not r.coords:
+                vel = QTableWidgetItem("—")
+            elif r.skip_video:
+                vel = QTableWidgetItem("off")
+                vel.setToolTip("You chose to score this recording without "
+                               "velocity.")
+            elif r.frame_times_measured:
+                vel = QTableWidgetItem("measured")
+            else:
+                vel = QTableWidgetItem("assumed")
             vel.setTextAlignment(Qt.AlignCenter)
             if r.coords and r.needs_frame_times:
-                vel.setText("assumed timing")
                 vel.setToolTip(
                     "Tracking found, but nothing here records when each frame "
                     "was captured — no *_timestamps.npy beside the "
@@ -905,7 +952,6 @@ class MainWindow(QMainWindow):
             self.tbl.setItem(row, 6, nh)
         self.tbl.blockSignals(False)
         self._update_nsel()
-        self._set_enabled(bool(p.recordings))
 
     def on_tbl_item_changed(self, item: QTableWidgetItem):
         """Keep the project in step when a row is ticked or renamed."""
@@ -931,6 +977,7 @@ class MainWindow(QMainWindow):
         n = len(self.checked())
         self.lbl_nsel.setText(f"<b>{n}</b> of {len(self.project.recordings)} "
                               f"ticked" if self.project else "")
+        self._update_gates()
 
     def checked(self) -> list[core.Recording]:
         """Every recording currently ticked on the Project tab."""
@@ -1000,6 +1047,13 @@ class MainWindow(QMainWindow):
                 raise ValueError("give at least one EEG channel")
             if emg[0] in eeg:
                 raise ValueError("a channel cannot be both EEG and EMG")
+            names = self._channel_names()
+            for i in eeg + emg:
+                if i < 1 or (names and i > len(names)):
+                    raise ValueError(
+                        f"no channel {i} — this recording has "
+                        f"{len(names)} channels, numbered 1-{len(names)}"
+                        if names else "channels are numbered from 1")
         except ValueError as e:
             self.lbl_chan.setText(f"<span style='color:#b00'>{e}</span>")
             return
@@ -1007,16 +1061,26 @@ class MainWindow(QMainWindow):
         self.project.save()
         self.show_channel_names()
 
+    def _channel_names(self) -> list[str] | None:
+        """The first recording's channel names, read once and remembered."""
+        if not self.project or not self.project.recordings:
+            return None
+        edf = self.project.recordings[0].edf
+        if edf not in self._chan_names:
+            try:
+                self._chan_names[edf] = core.channel_names(edf)
+            except Exception:
+                return None
+        return self._chan_names[edf]
+
     def show_channel_names(self):
         """Spell out which named channel each number refers to."""
-        if not self.project or not self.project.recordings:
-            self.lbl_chan.setText(""); return
-        try:
-            names = core.channel_names(self.project.recordings[0].edf)
-        except Exception:
+        names = self._channel_names()
+        if not names:
             self.lbl_chan.setText(""); return
         def show(i):
-            return names[i] if 0 <= i < len(names) else f"<b>no channel {i}</b>"
+            return names[i - 1] if 1 <= i <= len(names) \
+                else f"<b style='color:#b00'>no channel {i}</b>"
         eeg = ", ".join(show(i) for i in self.project.eeg_chan)
         emg = show(self.project.emg_chan) if self.project.emg_chan is not None else "-"
         self.lbl_chan.setText(f"<span style='color:#555'>EEG: {eeg} &nbsp;|&nbsp; "

@@ -9,7 +9,7 @@ Quickstart::
 
 The desktop application: ``somnus-gui`` (or ``python -m somnus.gui``).
 """
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 def __getattr__(name):

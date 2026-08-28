@@ -17,7 +17,7 @@ An `entry` is a plain dict:
      "pkl":       None}               # optional video tracking coordinates
 
 Name the channels with `eeg_chan` and `emg_chan`, either as channel names or as
-numbers.
+numbers counted from 1.
 
 For `dataset="bids"` add `"channels"` (a BIDS `channels.tsv`, used to identify
 EEG/EMG) and optionally `"events"` (a stage-scored `events.tsv`).
@@ -259,17 +259,17 @@ def resolve_frame_times(base: str, n_frames: int, duration: float,
 
 # ------------------------------------------------------------- EEG selection
 def _as_index(ch, names: list[str], what: str) -> int:
-    """Turn a channel name or number into an index, or say why it cannot."""
+    """Turn a channel name or number (counted from 1) into an index."""
     if isinstance(ch, str):
         if ch not in names:
             raise ValueError(f"{what}: no channel named {ch!r} in this "
                              f"recording. It has: {', '.join(names)}")
         return names.index(ch)
     i = int(ch)
-    if not 0 <= i < len(names):
+    if not 1 <= i <= len(names):
         raise ValueError(f"{what}: channel {i} is out of range. This recording "
-                         f"has {len(names)} channels (0-{len(names) - 1}).")
-    return i
+                         f"has {len(names)} channels, numbered 1-{len(names)}.")
+    return i - 1
 
 
 def resolve_channels(raw, eeg_chan, emg_chan) -> tuple[list[int], int]:
@@ -284,7 +284,8 @@ def resolve_channels(raw, eeg_chan, emg_chan) -> tuple[list[int], int]:
         raise ValueError(
             f"this recording has {len(names)} channels and Somnus will not "
             f"guess which is which. Say so with eeg_chan and emg_chan, as "
-            f"names or numbers -- for example eeg_chan=[0, 1, 2], emg_chan=3. "
+            f"names or numbers counted from 1 -- for example "
+            f"eeg_chan=[1, 2, 3], emg_chan=4. "
             f"The channels are: {', '.join(names)}")
 
     eeg = [_as_index(c, names, "eeg_chan")

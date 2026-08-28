@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "somnus-eeg"
-version = "1.0.0"
+version = "1.0.1"
 description = "Sleep-state scoring (Wake/NREM/REM) for mouse EEG/EMG(+video): trained model, batch scorer, review GUI, and anchored fine-tuning"
 readme = "README.md"
 authors = [
@@ -38,6 +38,7 @@ dependencies = [
     "PySide6 >= 6.7",
     "opencv-python >= 4.10",
     "av >= 13.0",
+    "tables >= 3.10",
 ]
 
 [project.optional-dependencies]
@@ -57,7 +58,7 @@ where = ["src"]
 "somnus.models" = ["*.json"]
 
 [tool.bumpver]
-current_version = "1.0.0"
+current_version = "1.0.1"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "Bump version {old_version} -> {new_version}"
 commit = true

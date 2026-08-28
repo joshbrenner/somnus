@@ -24,7 +24,7 @@ PySide6, opencv-python, av). Requires Python 3.12+, the floor set by openseize.
 Scoring one recording, from anywhere (installed or `pip install -e .`):
 
 ```bash
-python -m somnus.predict --score myrec.edf --out scored.csv
+python -m somnus.predict --score myrec.edf --eeg 1 2 3 --emg 4 --out scored.csv
 ```
 
 | Module | Role |

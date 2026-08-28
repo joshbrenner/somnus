@@ -729,7 +729,7 @@ def main():
         else os.path.splitext(edf_path)[0] + "_scored.csv"
     review_meta_path = os.path.abspath(sys.argv[3]) if len(sys.argv) > 3 else None
     certainty_threshold = float(sys.argv[4]) if len(sys.argv) > 4 else 0.80
-    eeg_idx = [int(x) for x in sys.argv[5].split(",")] \
+    eeg_idx = [int(x) - 1 for x in sys.argv[5].split(",")] \
         if len(sys.argv) > 5 and sys.argv[5].strip() else None
 
     if not os.path.exists(csv_path):
