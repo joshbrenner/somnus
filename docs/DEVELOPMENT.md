@@ -67,10 +67,10 @@ labeled epochs):
 
 | metric | value |
 |---|---|
-| accuracy | 0.9136 |
-| balanced accuracy | 0.8559 |
-| κ | 0.8434 |
-| REM F1 | 0.7229 |
+| accuracy | 0.9143 |
+| balanced accuracy | 0.8582 |
+| κ | 0.8447 |
+| REM F1 | 0.7284 |
 
 In-house data, leave-one-recording-out: accuracy 0.9749, balanced 0.9543.
 

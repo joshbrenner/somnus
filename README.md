@@ -114,15 +114,15 @@ from six labs:
 | metric | value |
 |---|---|
 | accuracy | 0.914 |
-| balanced accuracy | 0.856 |
-| Cohen's κ | 0.843 |
+| balanced accuracy | 0.858 |
+| Cohen's κ | 0.845 |
 
 On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 
 ## Limitations to keep in mind
 
 - **REM scoring criteria differ between labs** so a general model necessarily compromises;
-  (F1 REM 0.723 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
+  (F1 REM 0.728 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
 
 A full write-up of the evaluation, caveats, and design rationale will
 accompany the forthcoming preprint.
