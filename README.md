@@ -5,6 +5,10 @@
 
 ### Sleep-state scoring for mouse EEG/EMG (+ video)
 
+[![PyPI](https://img.shields.io/pypi/v/somnus-eeg.svg)](https://pypi.org/project/somnus-eeg/)
+[![Python](https://img.shields.io/pypi/pyversions/somnus-eeg.svg)](https://pypi.org/project/somnus-eeg/)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+
 Somnus assigns **Wake / NREM / REM** to every 4-second epoch of a mouse
 polysomnography recording, using EEG, EMG, and — when available —
 video-derived locomotion. It includes a trained logistic model, a batch scorer, 
