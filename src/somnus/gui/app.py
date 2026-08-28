@@ -933,7 +933,11 @@ class MainWindow(QMainWindow):
 
         def job(log):
             log(f"scanning {d} …")
-            new = [r for r in core.discover_recordings(d) if r.name not in have]
+            new, seen = [], set(have)
+            for r in core.discover_recordings(d):
+                if r.name not in seen:
+                    new.append(r)
+                    seen.add(r.name)
             sugg = None
             if new and want_suggestion:
                 try:
@@ -1323,12 +1327,16 @@ class MainWindow(QMainWindow):
             vel = ("log_velocity" in d["feat"].columns
                    and bool(np.isfinite(d["feat"]["log_velocity"]
                                         .to_numpy(dtype=float)).any()))
-            if not vel:
-                tag = "[no velocity]"
-            elif r.frame_times_measured:
-                tag = "[velocity: frame timing measured]"
+            if vel:
+                tag = "[velocity: frame timing measured]" \
+                    if r.frame_times_measured else \
+                    "[velocity: frame timing assumed]"
+            elif not r.coords:
+                tag = "[no tracking]"
+            elif r.skip_video:
+                tag = "[velocity off]"
             else:
-                tag = "[velocity: frame timing assumed]"
+                tag = "[no velocity]"
             lines += [
                 f"{r.name}: {len(lab)} epochs ({arch['recording_hours']:.2f} h)"
                 f"   {tag}",

@@ -167,7 +167,12 @@ class Project:
         """Open an existing project folder."""
         with open(os.path.join(path, "project.json")) as fh:
             d = json.load(fh)
-        recs = [Recording(**r) for r in d.pop("recordings", [])]
+        recs, seen = [], set()
+        for r in d.pop("recordings", []):
+            rec = Recording(**r)
+            if rec.name not in seen:
+                recs.append(rec)
+                seen.add(rec.name)
         return cls(path=path, recordings=recs, **d)
 
     @classmethod
