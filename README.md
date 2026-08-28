@@ -123,6 +123,10 @@ On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 
 - **REM scoring criteria differ between labs** so a general model necessarily compromises;
   (F1 REM 0.728 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
+- **Every recording must contain both sleep and wake.** The model depends on
+  z-scoring within each recording to accept a wide range of recording
+  conditions, so on a recording containing only one sleep/wake state — for
+  example a short session where the animal never sleeps — it fails completely.
 
 A full write-up of the evaluation, caveats, and design rationale will
 accompany the forthcoming preprint.

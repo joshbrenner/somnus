@@ -126,8 +126,9 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
     view_df = state.df[(state.df['Time_sec'] >= window_start_sec) & (state.df['Time_sec'] < end_time_sec)]
 
     # A bin the user has taken a position on -- confirmed, or painted to
-    # something other than what the model said -- is drawn near-opaque; a bin
-    # still carrying the model's own label is a faint wash of the same color.
+    # something other than what the model said -- is drawn strong; a bin
+    # still carrying the model's own label is the same color, mostly
+    # transparent so the background shows through.
     has_model = 'Model_State' in view_df.columns
     manual_spans = []
     for _, row in view_df.iterrows():
@@ -146,13 +147,13 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
             continue
         cv2.rectangle(overlay, (max(0, x1), 0), (min(w, x2), h), color, -1)
 
-    cv2.addWeighted(overlay, 0.35, img, 0.65, 0, img)
+    cv2.addWeighted(overlay, 0.20, img, 0.80, 0, img)
 
     if manual_spans:
         ov2 = img.copy()
         for x1, x2, color in manual_spans:
             cv2.rectangle(ov2, (max(0, x1), 0), (min(w, x2), h), color, -1)
-        cv2.addWeighted(ov2, 0.85, img, 0.15, 0, img)
+        cv2.addWeighted(ov2, 0.70, img, 0.30, 0, img)
 
     # Mark epochs the smoothing changed with a thin hatch along the top
     if getattr(state, 'review_meta', None) is not None:
