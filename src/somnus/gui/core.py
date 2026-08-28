@@ -574,6 +574,9 @@ def write_viewer_bundle(project: "Project", recording: Recording,
         "Artifact": np.repeat(exc, per),
         "Unclear": 0,
         "Confirmed": conf_flag,
+        # what the model itself said, so the scorer can render bins the user
+        # has taken a position on (changed or confirmed) more opaque
+        "Model_State": np.repeat(np.array(labels, dtype=object), per),
     })
     # snapshot whatever the scorer last saved before replacing it
     archive_scoring(project, recording)

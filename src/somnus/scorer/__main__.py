@@ -66,14 +66,16 @@ class SleepReviewState:
         # --- DYNAMIC LAYOUT MATH (HEIGHT & WIDTH SAFEGUARDS) ---
         self.video_w = 450
         self.side_w = 200
-        
+        self.bottom_h = 340
+
         # Leave a small 20px horizontal margin to prevent edge-clipping
         self.eeg_w = max(1000, screen_w - 20)
-        
-        # Calculate dynamic height based on available physical screen space.
-        # Top Menu = 30px, Bottom Row ~ 250px (SHRUNK). 
-        # Leave ~150px for the Mac Menu Bar, Window Title, and Dock.
-        available_height = screen_h - 30 - 250 - 150
+
+        # Fit the whole window inside the screen: top menu is 30 px, the
+        # bottom row is fixed at bottom_h, and ~120 px is left for the Mac
+        # menu bar and the window title. Video is letterboxed into its pane
+        # rather than allowed to grow the window past the screen.
+        available_height = screen_h - 30 - self.bottom_h - 120
         self.eeg_h = max(300, available_height)
         
         self.current_time_sec = 0.0
@@ -87,6 +89,9 @@ class SleepReviewState:
         self.paint_mode = 'Paint'
         self.is_mouse_down = False
         self.range_start_sec = None
+        self.dirty = False
+        self.last_save_time = 0.0
+        self.esc_armed_until = 0.0
         
         self.update_counter = 0 
         
@@ -241,27 +246,28 @@ class SleepReviewState:
                   f"certainty threshold.")
             return
 
-        # Anchor on the CENTER of the visible window, not its left edge. 
+        # Anchor on the CENTER of the visible window, not its left edge.
         if abs(self.playback_offset_sec) > 1e-9:
             anchor = self.current_time_sec + self.playback_offset_sec
         else:
             anchor = self.current_time_sec + self.window_width_sec / 2.0
-        tol = self.epoch_sec / 2.0
+        cur_ep = int(anchor // self.epoch_sec)
 
-        times = cand * self.epoch_sec
         if direction >= 0:
-            nxt = cand[times > anchor + tol]
+            nxt = cand[cand > cur_ep]
             target = int(nxt[0]) if nxt.size else int(cand[0])   # wrap to start
             if not nxt.size:
                 print("(wrapped to the first low-certainty epoch)")
         else:
-            prev = cand[times < anchor - tol]
+            prev = cand[cand < cur_ep]
             target = int(prev[-1]) if prev.size else int(cand[-1])
             if not prev.size:
                 print("(wrapped to the last low-certainty epoch)")
         t = target * self.epoch_sec
-        self.current_time_sec = max(0.0, t - self.window_width_sec / 2.0)
-        self.pending_jump_time = t
+        # center the MIDDLE of the epoch, so the whole block sits mid-window
+        tc = t + self.epoch_sec / 2.0
+        self.current_time_sec = max(0.0, tc - self.window_width_sec / 2.0)
+        self.pending_jump_time = tc
         self.mark_reviewed(t)
         pos = int(np.searchsorted(cand, target)) + 1
         print(f"-> epoch {target} (t={t:.0f}s) confidence="
@@ -362,6 +368,7 @@ class SleepReviewState:
 
         self._calculate_bouts()
         self.update_counter += 1
+        self.dirty = True
 
         if save:
             self.save_csv()
@@ -374,6 +381,8 @@ class SleepReviewState:
         """Write the scoring back to its file."""
         export_df = self.df.drop(columns=['State', 'Bout_ID'])
         export_df.to_csv(self.csv_path, index=False)
+        self.dirty = False
+        self.last_save_time = time.time()
         print(f"Successfully saved updated scoring to {self.csv_path}")
 
 def on_mouse(event, x, y, flags, param):
@@ -646,7 +655,20 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
         
         if state.paused:
             cv2.putText(composite_img, "PAUSED", (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-            
+
+        since_save = time.time() - state.last_save_time
+        if state.last_save_time and since_save < 2.0:
+            ov = composite_img.copy()
+            cv2.putText(ov, "SAVED", (15, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0, (0, 220, 0), 2)
+            a = 1.0 - since_save / 2.0
+            cv2.addWeighted(ov, a, composite_img, 1.0 - a, 0, composite_img)
+        if state.dirty and time.time() < state.esc_armed_until:
+            cv2.putText(composite_img,
+                        "UNSAVED CHANGES - Enter saves, Esc again discards",
+                        (15, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (0, 0, 255), 2)
+
         cv2.imshow(WINDOW_NAME, composite_img)
         
         if first_run:
@@ -660,7 +682,13 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
 
         if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             break
-        if key == 27: break
+        if key == 27:
+            if state.dirty and time.time() >= state.esc_armed_until:
+                state.esc_armed_until = time.time() + 5.0
+                print("Unsaved changes: Enter saves, Esc again closes "
+                      "without saving.")
+            else:
+                break
         elif key == ord(' '): state.paused = not state.paused
         elif key == 13: state.save_csv() 
         elif key == ord('1'): state.active_brush = 'Wake'

@@ -124,8 +124,12 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
     end_time_sec = window_start_sec + window_duration
     
     view_df = state.df[(state.df['Time_sec'] >= window_start_sec) & (state.df['Time_sec'] < end_time_sec)]
-    
-    confirmed_spans = []
+
+    # A bin the user has taken a position on -- confirmed, or painted to
+    # something other than what the model said -- is drawn near-opaque; a bin
+    # still carrying the model's own label is a faint wash of the same color.
+    has_model = 'Model_State' in view_df.columns
+    manual_spans = []
     for _, row in view_df.iterrows():
         bin_start = row['Time_sec']
         bin_state = row['State']
@@ -134,19 +138,21 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
         x2 = int(((bin_start + state.bin_step - window_start_sec) / window_duration) * w)
 
         color = COLORS.get(bin_state, (50, 50, 50))
-        # Epochs the user has confirmed are drawn again heavier
-        if row.get('Confirmed', 0):
-            confirmed_spans.append((x1, x2, color))
+        manual = bool(row.get('Confirmed', 0)) or (
+            bin_state != 'Unknown'
+            and (row['Model_State'] != bin_state if has_model else True))
+        if manual:
+            manual_spans.append((x1, x2, color))
             continue
         cv2.rectangle(overlay, (max(0, x1), 0), (min(w, x2), h), color, -1)
 
-    cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
+    cv2.addWeighted(overlay, 0.35, img, 0.65, 0, img)
 
-    if confirmed_spans:
+    if manual_spans:
         ov2 = img.copy()
-        for x1, x2, color in confirmed_spans:
+        for x1, x2, color in manual_spans:
             cv2.rectangle(ov2, (max(0, x1), 0), (min(w, x2), h), color, -1)
-        cv2.addWeighted(ov2, 0.60, img, 0.40, 0, img)
+        cv2.addWeighted(ov2, 0.85, img, 0.15, 0, img)
 
     # Mark epochs the smoothing changed with a thin hatch along the top
     if getattr(state, 'review_meta', None) is not None:
@@ -340,28 +346,22 @@ def render_composite(state, frame, eeg_slice, ch_names, sfreq, window_start_sec,
     EEG_H = state.eeg_h
     SIDE_W = state.side_w
     PSD_W = EEG_W - VIDEO_W - SIDE_W
-    BAR_H = 30 
-    
-    vh_target = int(frame.shape[0] * (VIDEO_W / frame.shape[1])) if frame.shape[1] > 0 else 337
-    
-    BOTTOM_H = max(vh_target, 250) 
-    
-    if frame.shape[0] > 0:
-        vid_resized = cv2.resize(frame, (VIDEO_W, vh_target))
-        if vh_target < BOTTOM_H:
-            pad = np.zeros((BOTTOM_H - vh_target, VIDEO_W, 3), dtype=np.uint8)
-            video_disp = np.vstack((vid_resized, pad))
-        else:
-            video_disp = vid_resized
-            BOTTOM_H = vh_target 
-    else:
-        video_disp = np.zeros((BOTTOM_H, VIDEO_W, 3), dtype=np.uint8)
-        vh_target = 337
-    
+    BAR_H = 30
+    BOTTOM_H = getattr(state, 'bottom_h', 340)
+
+    video_disp = np.zeros((BOTTOM_H, VIDEO_W, 3), dtype=np.uint8)
+    if frame.shape[0] > 0 and frame.shape[1] > 0:
+        scale = min(VIDEO_W / frame.shape[1], BOTTOM_H / frame.shape[0])
+        vw = max(1, int(frame.shape[1] * scale))
+        vh = max(1, int(frame.shape[0] * scale))
+        x0 = (VIDEO_W - vw) // 2
+        y0 = (BOTTOM_H - vh) // 2
+        video_disp[y0:y0 + vh, x0:x0 + vw] = cv2.resize(frame, (vw, vh))
+
     exact_time = window_start_sec + playback_offset_sec
     m, s = divmod(int(exact_time), 60)
     h_time, m = divmod(m, 60)
-    cv2.putText(video_disp, f"{h_time:02d}:{m:02d}:{s:02d}", (VIDEO_W - 120, vh_target - 10), 
+    cv2.putText(video_disp, f"{h_time:02d}:{m:02d}:{s:02d}", (VIDEO_W - 120, BOTTOM_H - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
     if (RENDER_CACHE['start_sec'] != window_start_sec or 
