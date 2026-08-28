@@ -583,7 +583,8 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
     print(" CLICK (Menu) : Access File, Brush, View, Mode, and Size options")
     print(" DRAG (EEG)  : Continuous 'Paint' mode (Updates CSV on mouse release)")
     print(" CLICK (EEG) : Point-A to Point-B 'Range' mode")
-    print(" 1-7         : Select brush (6 = Confirm, 7 = Erase)")
+    print(" 1-7         : Select brush (1 Wake, 2 NREM, 3 REM, 4 Artifact, "
+          "5 Unclear, 6 Confirm, 7 Erase)")
     print(" ENTER       : Save scoring to CSV")
     print(" u / U       : Next / previous low-certainty epoch")
     print(" [ / ]       : Lower / raise the certainty threshold")
@@ -656,14 +657,16 @@ def review_sleep(edf_path, csv_path, video_path, screen_w, screen_h,
             first_run = False
 
         key = cv2.waitKey(10) & 0xFF
-        
+
+        if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+            break
         if key == 27: break
         elif key == ord(' '): state.paused = not state.paused
         elif key == 13: state.save_csv() 
-        elif key == ord('1'): state.active_brush = 'Artifact'
-        elif key == ord('2'): state.active_brush = 'Wake'
-        elif key == ord('3'): state.active_brush = 'NREM'
-        elif key == ord('4'): state.active_brush = 'REM'
+        elif key == ord('1'): state.active_brush = 'Wake'
+        elif key == ord('2'): state.active_brush = 'NREM'
+        elif key == ord('3'): state.active_brush = 'REM'
+        elif key == ord('4'): state.active_brush = 'Artifact'
         elif key == ord('5'): state.active_brush = 'Unclear'
         elif key == ord('6'): state.active_brush = 'Confirm'
         elif key == ord('7'): state.active_brush = 'Erase'

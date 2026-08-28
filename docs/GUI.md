@@ -26,6 +26,8 @@ plus whether velocity is available.
 
 **Score** 
 
+- *Model* — the packaged base model, any fine-tuned model in the project's
+  `models/` folder, or a file chosen with `…`.
 - *Apply HMM temporal smoothing* — on, the decode finds the most likely state
   sequence, so isolated one-epoch flickers get absorbed. Off, you get the raw
   per-epoch model output.
@@ -34,12 +36,12 @@ plus whether velocity is available.
   scored data, `>1` forces longer bouts. If fragmentation is part of your phenotype,
   keep it low!
 
-**Review & Relabel** — a whole-recording hypnogram (x axis in hours) with a
-confidence panel underneath: raw per-epoch confidence, an adjustable
-rolling-median overlaid (default 1 min), the
-low-certainty threshold as a dashed red line, and red ticks marking the epochs
-that fail the threshold. Green ticks on the ribbon mark manually reviewed epochs. 
-Relabeling happens in the scorer (see below).
+**Review & Relabel** — three rows over the whole recording (x axis in hours):
+your manual labels, the model's labels (red ticks where the two disagree), and
+the model's confidence, averaged to one value per screen pixel for display
+only. The low-certainty threshold is a dashed red line, with a red tick under
+any pixel holding an epoch that falls below it. Relabeling happens in the
+scorer (see below); **Load true labels** pulls the results back in.
 
 **Evaluate** 
 
@@ -106,5 +108,5 @@ information. Epochs painted **Artifact** or **Unclear** are recorded as
   part-way.
 - There is no UI for restoring a snapshot from `labels/history/` — copy the file
   over `labels/<rec>_scored.csv` by hand.
-- Corrections are pulled back by pressing **Reload corrections**; the GUI does
-  not detect the scorer closing on its own.
+- Corrections are pulled back by pressing **Load true labels**; they are not
+  loaded automatically when the scorer closes.

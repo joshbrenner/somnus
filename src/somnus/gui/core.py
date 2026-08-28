@@ -486,19 +486,6 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
 
 
 # ----------------------------------------------------- hand-off to the scorer UI
-def smooth_trace(x: np.ndarray, window: int = 15) -> np.ndarray:
-    """Smooth a trace so it can actually be read on screen.
-
-    Per-epoch confidence over several hours is a solid block of hash. This keeps
-    the shape while making it legible. For display only -- it never affects
-    scoring.
-    """
-    if window <= 1 or len(x) == 0:
-        return np.asarray(x, dtype=float)
-    return (pd.Series(np.asarray(x, dtype=float))
-            .rolling(int(window), center=True, min_periods=1).median().to_numpy())
-
-
 MAX_SCORING_VERSIONS = 5
 
 

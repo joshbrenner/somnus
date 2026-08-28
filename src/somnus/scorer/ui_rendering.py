@@ -28,7 +28,7 @@ MENU_HEADERS = {
 
 MENU_ITEMS = {
     'File': ['Save CSV'],
-    'Brush': ['Artifact', 'Wake', 'NREM', 'REM', 'Unclear', 'Confirm', 'Erase'],
+    'Brush': ['Wake', 'NREM', 'REM', 'Artifact', 'Unclear', 'Confirm', 'Erase'],
     'View': ['4 sec', '10 sec', '30 sec', '1 min'],
     'Mode': ['Paint Mode', 'Range Mode'],
     'Brush Size': ['Min Size', 'Decrease (-)', 'Increase (+)']
@@ -228,7 +228,10 @@ def draw_menubar(img, w, h, state):
         txt_y = (h + text_sz[1]) // 2
         cv2.putText(img, menu_name, (txt_x, txt_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
 
-    status_text = f"Active: {state.active_brush or 'None'} | View: {state.window_width_sec}s | {state.paint_mode} | Size: {state.brush_size_sec:.1f}s"
+    status_text = (f"Active: {state.active_brush or 'None'} | "
+                   f"View: {state.window_width_sec}s | {state.paint_mode} | "
+                   f"Size: {state.brush_size_sec:.1f}s | "
+                   f"ENTER saves, ESC closes")
     text_sz, _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     cv2.putText(img, status_text, (w - text_sz[0] - 20, txt_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 

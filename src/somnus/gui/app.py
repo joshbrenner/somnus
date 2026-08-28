@@ -66,6 +66,29 @@ class Worker(QObject):
             self.failed.emit(traceback.format_exc())
 
 
+class ScorerWatch(QObject):
+    """Follows a launched scorer: says when its window is up and when it exits."""
+    opened = Signal()
+    closed = Signal(int)
+
+    def __init__(self, proc):
+        super().__init__()
+        self.proc = proc
+
+    @Slot()
+    def run(self):
+        seen = False
+        try:
+            for line in self.proc.stdout:
+                sys.stdout.write(line)
+                if not seen and line.startswith("Controls:"):
+                    seen = True
+                    self.opened.emit()
+        except Exception:
+            pass
+        self.closed.emit(self.proc.wait())
+
+
 class TaskRunner:
     """Holds a background job alive until it finishes, and only one at a time."""
 
@@ -154,18 +177,23 @@ class FrameTimesDialog(QDialog):
 
 # ------------------------------------------------------------------- hypnogram
 class HypnogramCanvas(FigureCanvas):
-    """The whole recording at a glance: a state ribbon over a confidence trace.
+    """The whole recording at a glance, in three rows.
+
+    Manual labels on top, the model's labels beneath them (marked where the two
+    disagree), then the model's confidence. The confidence trace is averaged
+    into one value per screen pixel purely for display; the per-epoch values
+    the scorer works from are untouched.
     """
     seeked = Signal(int)
 
     def __init__(self):
-        self.fig = Figure(figsize=(10, 2.6), constrained_layout=True)
+        self.fig = Figure(figsize=(10, 3.4), constrained_layout=True)
         super().__init__(self.fig)
-        gs = self.fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.05)
-        self.ax = self.fig.add_subplot(gs[0])
-        self.axc = self.fig.add_subplot(gs[1], sharex=self.ax)
-        self.cursor = None
-        self.cursor_c = None
+        gs = self.fig.add_gridspec(3, 1, height_ratios=[1, 1, 1], hspace=0.06)
+        self.ax_man = self.fig.add_subplot(gs[0])
+        self.ax_mod = self.fig.add_subplot(gs[1], sharex=self.ax_man)
+        self.axc = self.fig.add_subplot(gs[2], sharex=self.ax_man)
+        self.cursors = []
         self._n = 0
         self._epoch_sec = core.EPOCH_SEC
         self.mpl_connect("button_press_event", self._click)
@@ -174,78 +202,102 @@ class HypnogramCanvas(FigureCanvas):
         return np.arange(n) * self._epoch_sec / 3600.0
 
     def _click(self, ev):
-        if ev.inaxes in (self.ax, self.axc) and ev.xdata is not None and self._n:
+        if ev.inaxes in (self.ax_man, self.ax_mod, self.axc) \
+                and ev.xdata is not None and self._n:
             epoch = ev.xdata * 3600.0 / self._epoch_sec
             self.seeked.emit(int(np.clip(round(epoch), 0, self._n - 1)))
 
-    def draw_hypnogram(self, labels, confidence=None, manual=None,
-                       threshold=None, conf_raw=None, eligible=None):
-        """Draw the state ribbon and the confidence panel beneath it.
+    def _ribbon(self, ax, labels, x, title):
+        y = np.array([STATE_Y.get(s, np.nan) for s in labels], dtype=float)
+        ax.step(x, y, where="post", lw=0.8, color="#333333")
+        for s, yy in STATE_Y.items():
+            m = np.array([l == s for l in labels])
+            if m.any():
+                ax.fill_between(x, yy - 0.4, yy + 0.4, where=m,
+                                step="post", color=STATE_COLORS[s],
+                                alpha=0.75, lw=0)
+        ax.set_yticks(list(STATE_Y.values()))
+        ax.set_yticklabels(list(STATE_Y.keys()), fontsize=7)
+        ax.set_ylim(-0.7, 2.8)
+        ax.set_title(title, loc="left", fontsize=8, color="#555", pad=2)
+        ax.tick_params(labelbottom=False, labelsize=7)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
 
-        Both the smoothed and the raw confidence are drawn. The epochs the scorer will visit
-        are marked directly.
-        """
-        self.ax.clear(); self.axc.clear()
+    def draw_hypnogram(self, labels, manual_labels=None, threshold=None,
+                       conf_raw=None, eligible=None):
+        """Draw the three rows: manual labels, model labels, confidence."""
+        for ax in (self.ax_man, self.ax_mod, self.axc):
+            ax.clear()
+        self.cursors = []
         self._n = n = len(labels)
         if n == 0:
             self.draw_idle(); return
 
         x = self._hours(n)
-        y = np.array([STATE_Y.get(s, np.nan) for s in labels], dtype=float)
-        self.ax.step(x, y, where="post", lw=0.8, color="#333333")
-        for s, yy in STATE_Y.items():
-            m = np.array([l == s for l in labels])
-            if m.any():
-                self.ax.fill_between(x, yy - 0.4, yy + 0.4, where=m,
-                                     step="post", color=STATE_COLORS[s],
-                                     alpha=0.75, lw=0)
-        if manual is not None and np.any(manual):
-            self.ax.plot(x[np.flatnonzero(manual)],
-                         np.full(int(np.sum(manual)), 2.65), "|",
-                         color="#1a7f37", ms=6, mew=1.2)
-            self.ax.set_title(f"green ticks = manually reviewed "
-                              f"({int(np.sum(manual))} epochs)",
-                              loc="right", fontsize=7, color="#1a7f37", pad=2)
-        self.ax.set_yticks(list(STATE_Y.values()))
-        self.ax.set_yticklabels(list(STATE_Y.keys()), fontsize=8)
-        self.ax.set_ylim(-0.7, 2.8)
-        self.ax.set_xlim(0, max(x[-1], self._epoch_sec / 3600.0))
-        self.ax.tick_params(labelbottom=False, labelsize=8)
-        for sp in ("top", "right"):
-            self.ax.spines[sp].set_visible(False)
+        if manual_labels is None:
+            manual_labels = np.full(n, None, dtype=object)
+        n_man = int(sum(s is not None for s in manual_labels))
+
+        self._ribbon(self.ax_man, manual_labels, x, "manual labels")
+        if n_man == 0:
+            self.ax_man.text(0.5, 0.5, "no manual labels yet",
+                             transform=self.ax_man.transAxes, ha="center",
+                             va="center", fontsize=8, color="#999")
+
+        self._ribbon(self.ax_mod, labels, x, "model labels")
+        dis = np.array([m is not None and m != l
+                        for m, l in zip(manual_labels, labels)])
+        if dis.any():
+            self.ax_mod.plot(x[np.flatnonzero(dis)],
+                             np.full(int(dis.sum()), 2.65), "|",
+                             color="#cc2222", ms=6, mew=1.2)
+            self.ax_mod.set_title(f"red ticks = disagrees with manual "
+                                  f"({int(dis.sum())} epochs)",
+                                  loc="right", fontsize=7, color="#cc2222",
+                                  pad=2)
+        self.ax_mod.set_xlim(0, max(x[-1], self._epoch_sec / 3600.0))
 
         if conf_raw is not None and len(conf_raw) == n:
-            # the unsmoothed confidence, drawn faint: this is what the threshold tests
-            self.axc.fill_between(x, 0, conf_raw, step="post",
-                                  color="#4C78A8", alpha=0.22, lw=0)
-        if confidence is not None and len(confidence) == n:
-            self.axc.plot(x, confidence, color="#2b5d8a", lw=0.9)
+            # one confidence value per screen pixel: display only, the
+            # per-epoch values are untouched
+            nb = int(np.clip(self.get_width_height()[0] * 0.9, 300, n))
+            idx = np.minimum((np.arange(n) * nb) // n, nb - 1)
+            cnt = np.bincount(idx, minlength=nb).astype(float)
+            cnt[cnt == 0] = 1.0
+            bc = np.bincount(idx, weights=conf_raw, minlength=nb) / cnt
+            xb = (np.bincount(idx, weights=x, minlength=nb) / cnt)
+            self.axc.fill_between(xb, 0, bc, color="#4C78A8", alpha=0.25, lw=0)
+            self.axc.plot(xb, bc, color="#2b5d8a", lw=0.9)
+            if eligible is not None and eligible.any():
+                # a red tick wherever a pixel holds at least one epoch the
+                # scorer's low-certainty walk will visit
+                eb = np.bincount(idx, weights=eligible.astype(float),
+                                 minlength=nb) > 0
+                self.axc.plot(xb[eb], np.full(int(eb.sum()), 0.03), "|",
+                              color="#cc4444", ms=5, mew=1.0)
         if threshold is not None:
             self.axc.axhline(float(threshold), color="#cc4444", lw=1.0, ls="--")
             self.axc.text(0.004, float(threshold) + 0.03, f"{float(threshold):.2f}",
                           transform=self.axc.get_yaxis_transform(),
                           color="#cc4444", fontsize=7, va="bottom")
-        if eligible is not None and np.any(eligible):
-            # the epochs the jump will actually visit
-            self.axc.plot(x[np.flatnonzero(eligible)],
-                          np.full(int(np.sum(eligible)), 0.03), "|",
-                          color="#cc4444", ms=5, mew=1.0)
         self.axc.set_ylim(0, 1.02)
         self.axc.set_ylabel("conf.", fontsize=8)
         self.axc.set_xlabel("time (hours)", fontsize=8)
-        self.axc.tick_params(labelsize=8)
+        self.axc.tick_params(labelsize=7)
         for sp in ("top", "right"):
             self.axc.spines[sp].set_visible(False)
 
-        self.cursor = self.ax.axvline(0, color="red", lw=1.2, alpha=0.9)
-        self.cursor_c = self.axc.axvline(0, color="red", lw=1.2, alpha=0.9)
+        self.cursors = [ax.axvline(0, color="red", lw=1.2, alpha=0.9)
+                        for ax in (self.ax_man, self.ax_mod, self.axc)]
         self.draw_idle()
 
     def set_cursor(self, epoch: int):
         """Move the marker showing where the scorer is looking."""
-        if self.cursor is not None:
+        if self.cursors:
             t = epoch * self._epoch_sec / 3600.0
-            self.cursor.set_xdata([t]); self.cursor_c.set_xdata([t])
+            for c in self.cursors:
+                c.set_xdata([t])
             self.draw_idle()
 
 
@@ -409,6 +461,20 @@ class MainWindow(QMainWindow):
         w = QWidget(); lay = QVBoxLayout(w)
 
         box = QGroupBox("Scoring options"); form = QFormLayout(box)
+        rowm = QHBoxLayout()
+        self.cmb_model = QComboBox()
+        self.cmb_model.setMinimumWidth(240)
+        self.cmb_model.setToolTip(
+            "The model that scores the queue: the packaged base model, a "
+            "fine-tuned model from this project, or one chosen with …")
+        self.cmb_model.activated.connect(self.on_model_selected)
+        b_modelpick = QPushButton("…"); b_modelpick.setFixedWidth(30)
+        b_modelpick.setToolTip("choose a model file from anywhere")
+        b_modelpick.clicked.connect(self.on_model_browse)
+        rowm.addWidget(self.cmb_model); rowm.addWidget(b_modelpick)
+        rowm.addStretch(1)
+        form.addRow("Model", rowm)
+
         self.cb_decode = QCheckBox("Apply HMM temporal smoothing")
         self.cb_decode.setChecked(True)
         self.cb_decode.setToolTip(
@@ -470,16 +536,6 @@ class MainWindow(QMainWindow):
         self.cmb_review.setMinimumWidth(200)
         self.cmb_review.currentTextChanged.connect(self.load_for_review)
         top.addWidget(self.cmb_review)
-        top.addWidget(QLabel("  smoothing:"))
-        self.sp_smooth = QDoubleSpinBox()
-        self.sp_smooth.setRange(1, 301); self.sp_smooth.setSingleStep(2)
-        self.sp_smooth.setDecimals(0); self.sp_smooth.setValue(15)
-        self.sp_smooth.setSuffix(" epochs")
-        self.sp_smooth.setToolTip(
-            "Rolling median applied to the confidence trace for legibility "
-            "(15 epochs = 1 min). Display only — never fed back into scoring.")
-        self.sp_smooth.valueChanged.connect(lambda _: self.rebuild_review())
-        top.addWidget(self.sp_smooth)
         top.addWidget(QLabel("  low-certainty thr:"))
         self.sp_thr = QDoubleSpinBox()
         self.sp_thr.setRange(0.0, 1.0); self.sp_thr.setSingleStep(0.05)
@@ -504,20 +560,16 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Relabel in the Somnus scorer")
         v = QVBoxLayout(box)
         blurb = QLabel(
-            "Opens the full scorer on this recording, pre-loaded with the "
-            "model's labels so you correct rather than score from scratch. Its "
-            "side panel shows the <b>model's belief averaged over the window on "
-            "screen</b>, and the bout navigator gains a <b>Next low certainty</b> "
-            "button (<b>u</b> forward, <b>U</b> back; <b>[</b>/<b>]</b> adjust "
-            "the threshold). Epochs the HMM smoothing changed are marked in gold "
-            "and skipped by that walk. Use the <b>Confirm</b> brush (key <b>6</b>) to affirm a label the model got right without changing it — it renders more opaque, and <b>Erase</b> clears it. Corrections and confirmations are read back when you close it.")
+            "The scorer opens with the model's labels filled in. Fix what is "
+            "wrong, press <b>Enter</b> to save, close it, then click "
+            "<b>Load true labels</b>.")
         blurb.setWordWrap(True)
         v.addWidget(blurb)
         rowb = QHBoxLayout()
         self.b_launch = QPushButton("Open scorer for this recording")
         self.b_launch.clicked.connect(self.on_launch_scorer)
         rowb.addWidget(self.b_launch)
-        self.b_reload = QPushButton("Reload corrections")
+        self.b_reload = QPushButton("Load true labels")
         self.b_reload.clicked.connect(self.on_reload_corrections)
         rowb.addWidget(self.b_reload)
         rowb.addStretch(1)
@@ -827,7 +879,7 @@ class MainWindow(QMainWindow):
         self.project = core.Project.create(d, name=name)
         self._reset_review()
         self.refresh_project(); self.refresh_score_list()
-        self.refresh_eval_models()
+        self.refresh_eval_models(); self.refresh_model_choice()
         self.log(f"created project '{name}' at {d}")
 
     def on_open(self):
@@ -841,7 +893,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Cannot open", str(e)); return
         self._reset_review()
         self.refresh_project(); self.refresh_score_list()
-        self.refresh_eval_models()
+        self.refresh_eval_models(); self.refresh_model_choice()
         self.log(f"opened project {d} ({len(self.project.recordings)} recordings)")
 
     def on_add_folder(self):
@@ -1100,6 +1152,66 @@ class MainWindow(QMainWindow):
             self.lbl_score.setText(f"cursor on: <b>{r.name}</b>")
 
     # ---------------------------------------------------------------- scoring
+    BASE_MODEL_LABEL = "somnus base model"
+
+    def refresh_model_choice(self):
+        """Rebuild the Score tab's model list around the active model."""
+        if not self.project:
+            return
+        import glob
+        self._model_paths = {self.BASE_MODEL_LABEL: core.DEFAULT_ARTIFACT}
+        for p in sorted(glob.glob(os.path.join(self.project.models_dir,
+                                               "*.json"))):
+            self._model_paths[os.path.basename(p)] = p
+        cur = self.project.model or core.DEFAULT_ARTIFACT
+        if cur not in self._model_paths.values():
+            self._model_paths[os.path.basename(cur)] = cur
+        self.cmb_model.blockSignals(True)
+        self.cmb_model.clear()
+        self.cmb_model.addItems(list(self._model_paths))
+        name = next((k for k, v in self._model_paths.items() if v == cur),
+                    self.BASE_MODEL_LABEL)
+        self.cmb_model.setCurrentText(name)
+        self.cmb_model.blockSignals(False)
+
+    def _set_model(self, path: str) -> bool:
+        """Make this artifact the active model, or fall back to the base one."""
+        from somnus.predict import load_model
+        try:
+            art = load_model(path)
+            for k in ("columns", "coef", "intercept", "center", "scale",
+                      "states", "classes", "transition_matrix"):
+                if k not in art:
+                    raise ValueError(f"missing {k!r}")
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Not a Somnus model",
+                f"{os.path.basename(path)} could not be read as a Somnus "
+                f"model ({e}). Using the base model instead.")
+            self.project.model = core.DEFAULT_ARTIFACT
+            self.project.save()
+            self.refresh_model_choice()
+            return False
+        self.project.model = path
+        self.project.save()
+        self.log(f"active model -> {path}")
+        return True
+
+    def on_model_selected(self, _idx: int):
+        """Store the model picked from the drop-down."""
+        if self.project:
+            self._set_model(self._model_paths[self.cmb_model.currentText()])
+
+    def on_model_browse(self):
+        """Pick a model file from anywhere on disk."""
+        if not self.project:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a Somnus model", self.project.models_dir,
+            "Model JSON (*.json)")
+        if path and self._set_model(path):
+            self.refresh_model_choice()
+
     def refresh_score_list(self):
         """Refresh the list of recordings available to review."""
         self.lst_score.clear()
@@ -1230,6 +1342,7 @@ class MainWindow(QMainWindow):
         self.lbl_epoch.setText("—")
         self.lbl_qinfo.setText("")
         self.lbl_launch.setText("")
+        self._update_truth_button()
 
     def load_for_review(self, name: str):
         d = getattr(self, "scored", {}).get(name)
@@ -1247,39 +1360,46 @@ class MainWindow(QMainWindow):
         self.rebuild_review()
 
     # ----------------------------------------------------------------- review
-    def _manual_mask(self) -> np.ndarray:
-        manual = np.zeros(len(self.labels), dtype=bool)
+    def _manual_labels(self) -> np.ndarray:
+        manual = np.full(len(self.labels), None, dtype=object)
         if self.store is not None and len(self.store.df):
-            h = self.store.df.loc[self.store.manual_mask(), "epoch"].to_numpy()
-            h = h[(h >= 0) & (h < len(manual))]
-            manual[h.astype(int)] = True
+            h = self.store.df[self.store.manual_mask()]
+            for e, s in zip(h["epoch"].to_numpy(), h["state"].to_numpy()):
+                if 0 <= int(e) < len(manual):
+                    manual[int(e)] = s
         return manual
 
     def rebuild_review(self):
         """Redraw the Review tab for the recording currently chosen."""
         if self.labels is None:
             return
-        manual = self._manual_mask()
+        manual = self._manual_labels()
         conf_raw = self.proba.max(axis=1)
-        conf = core.smooth_trace(conf_raw, int(self.sp_smooth.value()))
         thr = float(self.sp_thr.value())
         # picked the same way the scorer's jump button picks, so the ticks
         # mark exactly the epochs it will visit
         smoothed = self.labels != self.raw
         eligible = (conf_raw < thr) & ~smoothed
-        self.hyp.draw_hypnogram(self.labels, conf, manual, threshold=thr,
+        self.hyp.draw_hypnogram(self.labels, manual, threshold=thr,
                                 conf_raw=conf_raw, eligible=eligible)
-        n_over = int(smoothed.sum())
-        n_low = int(eligible.sum())
+        n_man = int(sum(s is not None for s in manual))
         self.lbl_qinfo.setText(
-            f"{len(self.labels)} epochs. <b>{n_low}</b> fall below the "
-            f"{thr:.2f} certainty threshold — the scorer's <i>Next low "
-            f"certainty</i> button walks these in time order. <b>{n_over}</b> "
-            f"were changed by the HMM smoothing; those get their own color in "
-            f"the scorer and are deliberately <i>excluded</i> from that walk, "
-            f"since smoothing changing a label is not the same as the model "
-            f"being unsure. {int(manual.sum())} epochs are manually labeled.")
+            f"{len(self.labels)} epochs — <b>{int(eligible.sum())}</b> below "
+            f"the {thr:.2f} threshold (the scorer's <i>Next low certainty</i> "
+            f"button walks these) — {n_man} manually labeled.")
+        self._update_truth_button()
         self.goto_epoch(self.cur_epoch if self.cur_epoch < len(self.labels) else 0)
+
+    def _update_truth_button(self):
+        """Enable Load true labels only when there are labels to load."""
+        on = False
+        if self.rec_name and self.project is not None:
+            r = self.project.get(self.rec_name)
+            viewer = os.path.join(self.project.labels_dir,
+                                  f"{self.rec_name}_scored.csv")
+            on = bool(r is not None and r.scored) or os.path.exists(viewer) \
+                or (self.store is not None and self.store.n_manual() > 0)
+        self.b_reload.setEnabled(on)
 
     def goto_epoch(self, epoch: int):
         if self.labels is None or not len(self.labels):
@@ -1319,49 +1439,63 @@ class MainWindow(QMainWindow):
         if self.project.eeg_chan:
             cmd.append(",".join(str(i) for i in self.project.eeg_chan))
         try:
-            proc = subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
         except Exception as e:
             QMessageBox.critical(self, "Could not launch scorer", str(e)); return
         self._scorer_proc = proc
-        self.lbl_launch.setText(
-            f"Scorer launched (pid {proc.pid}). It is editing "
-            f"<code>{os.path.basename(scored)}</code> <b>inside the project</b>, "
-            f"not your source folder. Press Enter in the scorer to save, close "
-            f"it, then click <b>Reload corrections</b>.")
+        self.b_launch.setEnabled(False)
+        self.lbl_launch.setText("Launching the scorer — this can take a few "
+                                "seconds…")
         self.log(f"launched scorer on {r.name} (pid {proc.pid})")
+        self._watch_thread = QThread()
+        self._watcher = ScorerWatch(proc)
+        self._watcher.moveToThread(self._watch_thread)
+        self._watch_thread.started.connect(self._watcher.run)
+        self._watcher.opened.connect(self.on_scorer_open)
+        self._watcher.closed.connect(self.on_scorer_closed)
+        self._watcher.closed.connect(self._watch_thread.quit)
+        self._watch_thread.start()
+
+    @Slot()
+    def on_scorer_open(self):
+        self.lbl_launch.setText(
+            "Scorer open. It edits a copy inside the project, never your "
+            "source files. In the scorer, Enter saves and Esc closes.")
+
+    @Slot(int)
+    def on_scorer_closed(self, code: int):
+        self.b_launch.setEnabled(True)
+        self.lbl_launch.setText(
+            "Scorer closed. Click Load true labels to bring your edits in.")
+        self._update_truth_button()
 
     def on_reload_corrections(self):
-        """Pull the user's corrections back in from the manual scorer."""
+        """Pull the manual labels in, from the scorer or from a scoring file."""
         if not self.rec_name or self.project is None or self.store is None:
             return
         r = self.project.get(self.rec_name)
         if r is None:
             return
-        res = core.read_viewer_labels(self.project, r, self.store,
-                                      len(self.labels))
+        viewer = os.path.join(self.project.labels_dir, f"{r.name}_scored.csv")
+        if os.path.exists(viewer):
+            res = core.read_viewer_labels(self.project, r, self.store,
+                                          len(self.labels))
+            msg = (f"Loaded {res['corrected']} corrected, "
+                   f"{res.get('confirmed', 0)} confirmed, "
+                   f"{res['excluded']} excluded, "
+                   f"{res.get('reverted', 0)} reverted.")
+        elif r.scored:
+            k = self.store.import_manual(r.scored, len(self.labels))
+            msg = f"Imported {k} labels from {os.path.basename(r.scored)}."
+        else:
+            return
         self.store.save()
-        # reflect the corrections in the hypnogram
-        if len(self.store.df):
-            h = self.store.df[self.store.manual_mask()]
-            for e, s in zip(h["epoch"].to_numpy(), h["state"].to_numpy()):
-                if 0 <= int(e) < len(self.labels):
-                    self.labels[int(e)] = s
-        self.rebuild_review(); self.refresh_project()
-        msg = (f"pulled in {res['corrected']} corrected and "
-               f"{res.get('confirmed', 0)} confirmed epoch(s), "
-               f"{res['excluded']} marked unscorable, "
-               f"{res.get('reverted', 0)} reverted to the model "
-               f"(edited then changed back). "
-               f"{self.store.n_manual()} labels now usable for fine-tuning, "
-               f"{self.store.n_excluded()} excluded. "
-               f"Only epochs whose label CHANGED are counted — an untouched "
-               f"epoch comes back identical to the model's own prediction, and "
-               f"treating those as manual labels would train the model on itself.")
+        msg += (f" {self.store.n_manual()} manual labels ready for "
+                f"fine-tuning.")
         self.lbl_launch.setText(msg)
-        self.log(f"reloaded: {res['corrected']} corrected, "
-                 f"{res.get('confirmed', 0)} confirmed, "
-                 f"{res['excluded']} excluded, "
-                 f"{res.get('reverted', 0)} reverted")
+        self.rebuild_review(); self.refresh_project()
+        self.log(msg)
 
     # -------------------------------------------------------------- fine-tune
     def on_finetune(self):
@@ -1450,7 +1584,7 @@ class MainWindow(QMainWindow):
         self.bar_ft.hide(); self.b_ft.setEnabled(True)
         if not isinstance(res, dict):
             return
-        self.refresh_eval_models()
+        self.refresh_eval_models(); self.refresh_model_choice()
         msg = (f"Fine-tuned model written to:\n{res['path']}\n\n"
                f"chosen λ = {res['lam']:g}\n")
         if res["improved"]:
@@ -1460,6 +1594,7 @@ class MainWindow(QMainWindow):
                     self, "Use the fine-tuned model?",
                     msg + "\n\nMake it active now?") == QMessageBox.Yes:
                 self.project.model = res["path"]; self.project.save()
+                self.refresh_model_choice()
                 self.log(f"active model -> {res['path']}")
         else:
             msg += ("It did NOT beat the base model out-of-sample, so the base "
