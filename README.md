@@ -99,9 +99,7 @@ The performance loss on labeled epochs is minimized with a penalty that
 pulls the weights toward the existing model. We use a parameter λ,
 where "keep the shipped model" (λ→∞), and "train on my data
 alone" (λ→0). The default λ value is chosen by cross-validation on your recordings,
-so fine-tune versus retrain is decided by evidence. Adjust it at your risk -
-in fine-tuning tests on three subjects that the base model handled poorly, balanced accuracy with our method went from
-0.706 → 0.783, while training on those recordings alone (λ→0) scored 0.642, worse than not adapting at all.
+so fine-tune versus retrain is decided by evidence. 
 
 ## Performance
 
@@ -120,7 +118,7 @@ On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 ## Limitations to keep in mind
 
 - **REM scoring criteria differ between labs** so a general model necessarily compromises;
-  (F1 REM 0.723 vs >0.90 for Wake/NREM). Fine-tuning to your own scoring is the intended remedy.
+  (F1 REM 0.723 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
 
 A full write-up of the evaluation, caveats, and design rationale will
 accompany the forthcoming preprint.
