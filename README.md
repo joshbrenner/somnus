@@ -15,7 +15,7 @@ video-derived locomotion. It includes a trained logistic model, a batch scorer,
 a review interface for correcting the model's output, and a fine-tuning step that
 adapts the model to your dataset.
 
-The design goal is not maximum accuracy on one rig. It is a system that **runs
+The design goal is not necessarily maximum accuracy on one rig, but rather a system that **runs
 on whatever data you have**, and that can be readily adapted to disease models
 with degraded sleep architecture where heavier commercial scorers may fail altogether.
 
