@@ -125,7 +125,7 @@ On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
 
 ## Limitations to keep in mind
 
-- **REM scoring criteria differ between labs** so a general model necessarily compromises;
+- **REM scoring is the weakest performer**
   (F1 REM 0.728 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
 - **Every recording must contain both sleep and wake.** The model depends on
   z-scoring within each recording to accept a wide range of recording
