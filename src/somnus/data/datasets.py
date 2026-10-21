@@ -331,7 +331,8 @@ def pick_best_eeg(raw, eeg_idx: list[int], sfreq: float) -> int:
 def featurize(entry: dict, probe_seconds: float = 900.0,
               mm_per_px: float | None = None,
               eeg_chan=None, emg_chan=None,
-              assume_frame_times: bool = False) -> pd.DataFrame:
+              assume_frame_times: bool = False,
+              progress=None) -> pd.DataFrame:
     """Read one recording and return its per-epoch feature table.
 
     Opens the EDF, picks the best EEG channel, works out what the recording can
@@ -343,11 +344,16 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     assumed rather than measured, scoring stops unless `assume_frame_times`
     says to go ahead.
     """
+    def report(stage, done=0, total=0):
+        if progress:
+            progress(stage, done, total)
+
     mm_per_px = mm_per_px if mm_per_px is not None else entry.get("mm_per_px")
     eeg_chan = eeg_chan if eeg_chan is not None else entry.get("eeg_chan")
     emg_chan = emg_chan if emg_chan is not None else entry.get("emg_chan")
     assume_frame_times = assume_frame_times or bool(
         entry.get("assume_frame_times"))
+    report("reading the recording")
     raw = mne.io.read_raw_edf(entry["edf"], preload=False)
     sfreq = float(raw.info["sfreq"])
     names = raw.ch_names
@@ -385,14 +391,19 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     tiers = H.available_tiers(eeg_edge)
     emg_bands = H.available_emg_bands(emg_edge)
 
-    df = pd.concat([H.eeg_features(eeg, sfreq, n_ep, tiers),
-                    H.emg_features(emg, sfreq, n_ep, emg_bands)], axis=1)
+    df = pd.concat([
+        H.eeg_features(eeg, sfreq, n_ep, tiers,
+                       progress=lambda k: report("EEG features", k, n_ep)),
+        H.emg_features(emg, sfreq, n_ep, emg_bands,
+                       progress=lambda k: report("EMG features", k, n_ep))],
+        axis=1)
 
     # --- velocity (only if the recording has video tracking) ---
     vel_src = "none"
     vel_warn = None
     vel_unit = "px/s"
     if entry.get("pkl"):
+        report("movement")
         coords, meta = load_coordinates(entry["pkl"])
         t, vel_src, vel_warn = resolve_frame_times(
             entry["recording"], len(coords), raw.n_times / sfreq, meta,

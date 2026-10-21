@@ -227,13 +227,14 @@ def _iter_windows(sig: np.ndarray, win: int, n_epochs: int,
 
 # -------------------------------------------------------- spectral features
 def eeg_features(eeg: np.ndarray, sfreq: float, n_epochs: int,
-                 tiers: set[int], epoch_sec: float = EPOCH_SEC
-                 ) -> pd.DataFrame:
+                 tiers: set[int], epoch_sec: float = EPOCH_SEC,
+                 progress=None) -> pd.DataFrame:
     """Measure the EEG frequency bands for every epoch.
 
     Each band is reported as a share of the tier-1 total, so the numbers mean
     the same thing whether or not the recording reaches the higher tiers. Bands
-    the recording cannot support are left blank.
+    the recording cannot support are left blank. `progress`, if given, is
+    called with the number of epochs done so far.
     """
     win = int(round(epoch_sec * sfreq))
     cols = ([f"{b}_rel" for b in TIER1_ORDER]
@@ -265,12 +266,14 @@ def eeg_features(eeg: np.ndarray, sfreq: float, n_epochs: int,
                 p = _band_power(f, psd, lo, hi)
                 out.loc[idx, f"{name}_ratio_log"] = np.log10(
                     np.clip(p, 1e-30, None) / t1)
+        if progress:
+            progress(s0 + len(w))
     return out
 
 
 def emg_features(emg: np.ndarray, sfreq: float, n_epochs: int,
-                 bands: set[str], epoch_sec: float = EPOCH_SEC
-                 ) -> pd.DataFrame:
+                 bands: set[str], epoch_sec: float = EPOCH_SEC,
+                 progress=None) -> pd.DataFrame:
     """Measure muscle activity in several frequency bands, for every epoch.
 
     Where EMG power sits varies wildly between animals and electrode placements,
@@ -301,6 +304,8 @@ def emg_features(emg: np.ndarray, sfreq: float, n_epochs: int,
             out.loc[idx, "emg_ratio_hi_lo"] = np.log10(
                 np.clip(vals["emg_mid"], 1e-30, None)
                 / np.clip(vals["emg_low"], 1e-30, None))
+        if progress:
+            progress(s0 + len(w))
     return out
 
 

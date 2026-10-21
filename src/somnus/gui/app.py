@@ -47,17 +47,20 @@ STATE_Y = {"Wake": 2, "NREM": 1, "REM": 0}
 class Worker(QObject):
     """Runs one slow job away from the window, reporting progress as it goes."""
     progress = Signal(str)
+    stepped = Signal(object)
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, fn, *a, **kw):
+    def __init__(self, fn, *a, steps=False, **kw):
         super().__init__()
-        self.fn, self.a, self.kw = fn, a, kw
+        self.fn, self.a, self.kw, self.steps = fn, a, kw, steps
 
     @Slot()
     def run(self):
         try:
             self.kw["log"] = self.progress.emit
+            if self.steps:
+                self.kw["step"] = self.stepped.emit
             self.finished.emit(self.fn(*self.a, **self.kw))
         except RuntimeError as e:
             # jobs raise RuntimeError deliberately to talk to the user
@@ -81,7 +84,7 @@ class ScorerWatch(QObject):
         try:
             for line in self.proc.stdout:
                 sys.stdout.write(line)
-                if not seen and line.startswith("Controls:"):
+                if not seen and line.startswith("Scorer ready"):
                     seen = True
                     self.opened.emit()
         except Exception:
@@ -100,14 +103,18 @@ class TaskRunner:
     def busy(self) -> bool:
         return self.thread is not None and self.thread.isRunning()
 
-    def start(self, fn, on_done, on_log, *a, **kw) -> bool:
+    def start(self, fn, on_done, on_log, *a, on_step=None, **kw) -> bool:
+        """Run fn off the main thread. With on_step, fn also gets a `step`
+        callable whose argument is handed to on_step."""
         if self.busy():
             return False
         self.thread = QThread()
-        self.worker = Worker(fn, *a, **kw)
+        self.worker = Worker(fn, *a, steps=on_step is not None, **kw)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(on_log)
+        if on_step is not None:
+            self.worker.stepped.connect(on_step)
         self.worker.failed.connect(on_log)
         self.worker.failed.connect(on_done)
         self.worker.finished.connect(on_done)
@@ -313,7 +320,6 @@ class MainWindow(QMainWindow):
 
         # per-recording working state
         self.rec_name: str | None = None
-        self.feat: pd.DataFrame | None = None
         self.labels: np.ndarray | None = None
         self.raw: np.ndarray | None = None
         self.proba: np.ndarray | None = None
@@ -335,6 +341,7 @@ class MainWindow(QMainWindow):
         self.status.setSizeGripEnabled(True)
         self.status.showMessage("Create or open a project to begin.")
         self._chan_names = {}
+        self.setAcceptDrops(True)
         self._update_gates()
 
     # ------------------------------------------------------------- log helper
@@ -361,6 +368,9 @@ class MainWindow(QMainWindow):
         self.b_proceed.setEnabled(bool(sel))
         self.b_proceed.setStyleSheet(
             "background-color:#1a7f37; color:white;" if sel else "")
+        reviewable = bool(self._reviewable())
+        self.b_review.setEnabled(reviewable)
+        self.b_to_review.setEnabled(reviewable)
 
     # ------------------------------------------------------------ Project tab
     def _tab_project(self) -> QWidget:
@@ -380,7 +390,7 @@ class MainWindow(QMainWindow):
         tick_note = QLabel(
             "<b>Tick the recordings you want to work with.</b> The Score and "
             "Evaluate tabs process everything ticked; fine-tuning has its own "
-            "list.")
+            "list. Drop EDF files or folders onto the window to add them.")
         tick_note.setWordWrap(True)
         lay.addWidget(tick_note)
 
@@ -407,6 +417,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.lbl_chan, 1)
         for e in (self.ed_eeg, self.ed_emg):
             e.editingFinished.connect(self.on_channels_edited)
+            e.setAcceptDrops(False)        # dropped files go to the window
         lay.addWidget(chan)
 
         self.tbl = QTableWidget(0, 7)
@@ -436,11 +447,19 @@ class MainWindow(QMainWindow):
             lambda: self.on_check_all(False))
         self.b_proceed = QPushButton("Proceed to Score →")
         self.b_proceed.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
+        self.b_review = QPushButton("Review && Relabel →")
+        self.b_review.setToolTip("Open recordings that have already been scored "
+                                 "without scoring them again.")
+        self.b_review.clicked.connect(self.go_review)
         sp.addWidget(self.b_all); sp.addWidget(self.b_none)
-        sp.addWidget(self.b_proceed)
+        sp.addWidget(self.b_proceed); sp.addWidget(self.b_review)
         self.lbl_nsel = QLabel(""); sp.addWidget(self.lbl_nsel)
         sp.addStretch(1)
         lay.addLayout(sp)
+
+        self.lbl_add = QLabel(""); self.lbl_add.hide()
+        self.bar_add = QProgressBar(); self.bar_add.hide()
+        lay.addWidget(self.lbl_add); lay.addWidget(self.bar_add)
 
         note = QLabel(
             "Source recordings are opened <b>read-only</b>. Every output "
@@ -510,12 +529,19 @@ class MainWindow(QMainWindow):
         self.b_score = QPushButton("Score queue")
         self.b_score.clicked.connect(self.on_score)
         row.addWidget(self.b_score)
+        self.b_to_review = QPushButton("Proceed to Review →")
+        self.b_to_review.clicked.connect(self.go_review)
+        row.addWidget(self.b_to_review)
         self.lbl_score = QLabel("")
         row.addWidget(self.lbl_score); row.addStretch(1)
         lay.addLayout(row)
 
-        self.bar = QProgressBar(); self.bar.setRange(0, 0); self.bar.hide()
-        lay.addWidget(self.bar)
+        # one bar for the queue, one for the recording being scored
+        self.lbl_prog = QLabel(""); self.lbl_prog.hide()
+        self.bar = QProgressBar(); self.bar.hide()
+        self.bar_rec = QProgressBar(); self.bar_rec.hide()
+        for wdg in (self.lbl_prog, self.bar, self.bar_rec):
+            lay.addWidget(wdg)
 
         self.s_summary = QPlainTextEdit(); self.s_summary.setReadOnly(True)
         self.s_summary.setMaximumHeight(190)
@@ -561,7 +587,7 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(box)
         blurb = QLabel(
             "The scorer opens with the model's labels filled in. Fix what is "
-            "wrong, press <b>Enter</b> to save, close it, then click "
+            "wrong (changes save as you go), close it, then click "
             "<b>Load true labels</b>.")
         blurb.setWordWrap(True)
         v.addWidget(blurb)
@@ -921,20 +947,43 @@ class MainWindow(QMainWindow):
 
     def on_add_folder(self):
         """Add every recording found in a folder to the project."""
-        if not self.project or self.runner.busy():
-            return
         d = QFileDialog.getExistingDirectory(self, "Folder containing EDF "
                                                   "recordings (read-only)")
-        if not d:
+        if d:
+            self.add_recordings([d])
+
+    def dragEnterEvent(self, ev):
+        if self.project and any(u.isLocalFile() for u in ev.mimeData().urls()):
+            ev.acceptProposedAction()
+
+    def dropEvent(self, ev):
+        """Add recordings from EDF files or folders dropped on the window."""
+        self.tabs.setCurrentIndex(0)
+        self.add_recordings([u.toLocalFile() for u in ev.mimeData().urls()
+                             if u.isLocalFile()])
+        ev.acceptProposedAction()
+
+    def add_recordings(self, paths: list[str]):
+        """Add the recordings among these EDF files and folders to the project."""
+        if not self.project:
+            return
+        if self.runner.busy():
+            QMessageBox.information(self, "Busy", "Wait for the current job "
+                                    "to finish, then add the recordings again.")
             return
         proj = self.project
         have = {r.name for r in proj.recordings}
         want_suggestion = not proj.eeg_chan
+        where = paths[0] if len(paths) == 1 else f"{len(paths)} dropped items"
 
-        def job(log):
-            log(f"scanning {d} …")
+        def job(log, step):
+            log(f"scanning {where} …")
+            edfs = core.find_edfs(paths)
+            log(f"found {len(edfs)} EDF recording(s)")
             new, seen = [], set(have)
-            for r in core.discover_recordings(d):
+            for i, edf in enumerate(edfs, 1):
+                r = core.recording_for(edf)
+                step((i, len(edfs), r.name))
                 if r.name not in seen:
                     new.append(r)
                     seen.add(r.name)
@@ -944,15 +993,26 @@ class MainWindow(QMainWindow):
                     sugg = core.suggest_channels(new[0].edf)
                 except Exception as e:
                     log(f"could not read channels from {new[0].name}: {e}")
-            return dict(kind="add_folder", folder=d, new=new, sugg=sugg)
+            return dict(kind="add_folder", where=where, found=len(edfs),
+                        new=new, sugg=sugg)
 
         self.b_add.setEnabled(False)
-        self.runner.start(job, self.after_add_folder, self.log)
+        self.lbl_add.setText(f"Scanning {where} …"); self.lbl_add.show()
+        self.bar_add.setRange(0, 0); self.bar_add.show()
+        self.runner.start(job, self.after_add_folder, self.log,
+                          on_step=self.on_add_step)
+
+    @Slot(object)
+    def on_add_step(self, info):
+        i, n, name = info
+        self.bar_add.setRange(0, n); self.bar_add.setValue(i)
+        self.lbl_add.setText(f"Loading recordings ({i}/{n}): {name}")
 
     @Slot(object)
     def after_add_folder(self, res):
         """Put the discovered recordings into the project."""
         self.b_add.setEnabled(True)
+        self.lbl_add.hide(); self.bar_add.hide()
         if not isinstance(res, dict) or res.get("kind") != "add_folder":
             return
         self.project.recordings.extend(res["new"])
@@ -965,7 +1025,9 @@ class MainWindow(QMainWindow):
                      f"check these on the Project tab before scoring")
         self.project.save()
         self.refresh_project(); self.refresh_score_list()
-        self.log(f"added {len(res['new'])} recording(s) from {res['folder']}")
+        known = res["found"] - len(res["new"])
+        self.log(f"added {len(res['new'])} recording(s) from {res['where']}"
+                 + (f"; {known} already in the project" if known else ""))
 
     def refresh_project(self):
         """Redraw the project table from the project on disk."""
@@ -1241,7 +1303,7 @@ class MainWindow(QMainWindow):
             self.refresh_model_choice()
 
     def refresh_score_list(self):
-        """Refresh the list of recordings available to review."""
+        """Refresh the Score tab's queue and the Review tab's recordings."""
         self.lst_score.clear()
         for r in self.checked():
             bits = [r.name]
@@ -1252,6 +1314,16 @@ class MainWindow(QMainWindow):
         self.b_score.setText(f"Score queue ({n})" if n else "Score queue")
         self.lbl_score.setText("" if n else
                                "<i>nothing ticked on the Project tab</i>")
+        names = self._reviewable()
+        self.cmb_review.blockSignals(True)
+        self.cmb_review.clear()
+        self.cmb_review.addItems(names)
+        if self.rec_name in names:
+            self.cmb_review.setCurrentText(self.rec_name)
+        self.cmb_review.blockSignals(False)
+        if names and self.rec_name not in names:
+            self.load_for_review(names[0])
+        self._update_gates()
 
     def on_score(self):
         """Score every ticked recording with the current model."""
@@ -1271,19 +1343,25 @@ class MainWindow(QMainWindow):
         stick = float(self.sp_stick.value())
         proj, model = self.project, self.project.model
 
-        def job(log):
+        def job(log, step):
             results = []
+            n = len(queue)
             for i, r in enumerate(queue, 1):
-                log(f"[{i}/{len(queue)}] {r.name}: featurizing …")
+                log(f"[{i}/{n}] {r.name}: featurizing …")
+                step((i, n, r.name, "featurizing", 0, 0))
                 cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
                 try:
-                    feat = core.featurize(r, cache=cache, project=proj)
+                    feat = core.featurize(
+                        r, cache=cache, project=proj, log=log,
+                        progress=lambda stage, done, total, i=i, name=r.name:
+                            step((i, n, name, stage, done, total)))
                 except Exception as e:
                     log(f"    SKIPPED — {type(e).__name__}: {e}")
                     continue
                 log(f"    {len(feat)} epochs; scoring "
                     f"(smoothing={'on' if decode else 'off'}, "
                     f"resistance={stick:g}) …")
+                step((i, n, r.name, "scoring", 0, 0))
                 lab, proba = core.score(feat, model, decode=decode,
                                        stickiness=stick)
                 raw, _ = core.score(feat, model, decode=False)
@@ -1293,10 +1371,17 @@ class MainWindow(QMainWindow):
                     feat["epoch"].to_numpy(), feat["t_start"].to_numpy(),
                     lab, proba.max(axis=1), model)
                 if r.scored and store.n_manual() == 0:
-                    k = store.import_manual(r.scored, len(feat))
+                    try:
+                        k = store.import_manual(r.scored, len(feat))
+                    except Exception as e:
+                        log(f"    could not import {os.path.basename(r.scored)} "
+                            f"({type(e).__name__}: {e}); keeping the model's "
+                            f"labels only")
+                        k = 0
                     if k:
                         log(f"    imported {k} existing manual labels")
                 store.save()
+                core.save_model_output(proj, r.name, lab, raw, proba)
                 log(f"    wrote {n_new} model rows "
                     f"({store.n_manual()} manual rows preserved)")
                 results.append(dict(rec=r, feat=feat, labels=lab, raw=raw,
@@ -1305,16 +1390,31 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("nothing scored — see the log above")
             return results
 
-        self.bar.show(); self.b_score.setEnabled(False)
-        self.runner.start(job, self.after_score, self.log)
+        self.b_score.setEnabled(False)
+        self.on_score_step((1, len(queue), queue[0].name, "starting", 0, 0))
+        for wdg in (self.lbl_prog, self.bar, self.bar_rec):
+            wdg.show()
+        self.runner.start(job, self.after_score, self.log,
+                          on_step=self.on_score_step)
+
+    @Slot(object)
+    def on_score_step(self, info):
+        """Show which recording is being scored, and how far into it."""
+        i, n, name, stage, done, total = info
+        self.bar.setRange(0, n); self.bar.setValue(i - 1)
+        self.bar_rec.setRange(0, total); self.bar_rec.setValue(done)
+        detail = f"{stage}, epoch {done:,} / {total:,}" if total else stage
+        self.lbl_prog.setText(f"Recording <b>{i} of {n}</b> — {name}: {detail}")
 
     @Slot(object)
     def after_score(self, res):
         """Report the outcome once a scoring run has finished."""
-        self.bar.hide(); self.b_score.setEnabled(True)
+        for wdg in (self.lbl_prog, self.bar, self.bar_rec):
+            wdg.hide()
+        self.b_score.setEnabled(True)
         if not isinstance(res, list) or not res:
             return
-        self.scored = {d["rec"].name: d for d in res}
+        self.scored.update({d["rec"].name: d for d in res})
 
         lines = []
         for d in res:
@@ -1362,14 +1462,13 @@ class MainWindow(QMainWindow):
         self.log(f"scored {len(res)} recording(s)")
 
         # load the first result into the Review tab
+        self.refresh_project(); self.refresh_score_list()
         self.load_for_review(res[0]["rec"].name)
-        self.refresh_project()
-        self.tabs.setCurrentIndex(2)
 
     def _reset_review(self):
         """Drop the per-recording state left over from the previous project."""
         self.rec_name = None
-        self.feat = self.labels = self.raw = self.proba = None
+        self.labels = self.raw = self.proba = None
         self.store = None
         self.scored = {}
         self.cur_epoch = 0
@@ -1385,17 +1484,39 @@ class MainWindow(QMainWindow):
         self._ft_selected = {}
         self.tbl_ft.setRowCount(0)
 
+    def _reviewable(self) -> list[str]:
+        """Ticked recordings that have been scored, now or in an earlier session."""
+        if not self.project:
+            return []
+        return [r.name for r in self.checked() if r.name in self.scored
+                or os.path.exists(core.model_output_path(self.project, r.name))]
+
+    def go_review(self):
+        """Open the Review tab on a scored recording, without scoring again."""
+        names = self._reviewable()
+        if not names:
+            return
+        self.load_for_review(self.rec_name if self.rec_name in names else names[0])
+        self.tabs.setCurrentIndex(2)
+
     def load_for_review(self, name: str):
-        d = getattr(self, "scored", {}).get(name)
-        if not d:
+        """Show this recording on the Review tab, reading its scoring from disk
+        if it was scored in an earlier session."""
+        d = self.scored.get(name)
+        if d is None and self.project is not None:
+            out = core.load_model_output(self.project, name)
+            r = self.project.get(name)
+            if out is None or r is None:
+                return
+            d = dict(rec=r, labels=out[0], raw=out[1], proba=out[2],
+                     store=core.LabelStore(self.project, name))
+            self.scored[name] = d
+        if d is None:
             return
         self.rec_name = name
-        self.feat, self.labels = d["feat"], d["labels"]
-        self.raw, self.proba = d["raw"], d["proba"]
+        self.labels, self.raw, self.proba = d["labels"], d["raw"], d["proba"]
         self.store = d["store"]
         self.cmb_review.blockSignals(True)
-        self.cmb_review.clear()
-        self.cmb_review.addItems(list(self.scored.keys()))
         self.cmb_review.setCurrentText(name)
         self.cmb_review.blockSignals(False)
         self.rebuild_review()
@@ -1502,7 +1623,8 @@ class MainWindow(QMainWindow):
     def on_scorer_open(self):
         self.lbl_launch.setText(
             "Scorer open. It edits a copy inside the project, never your "
-            "source files. In the scorer, Enter saves and Esc closes.")
+            "source files, and saves as you go. Its Help menu lists the "
+            "controls.")
 
     @Slot(int)
     def on_scorer_closed(self, code: int):
@@ -1527,7 +1649,14 @@ class MainWindow(QMainWindow):
                    f"{res['excluded']} excluded, "
                    f"{res.get('reverted', 0)} reverted.")
         elif r.scored:
-            k = self.store.import_manual(r.scored, len(self.labels))
+            try:
+                k = self.store.import_manual(r.scored, len(self.labels))
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Could not read scoring",
+                    f"{os.path.basename(r.scored)} could not be read "
+                    f"({type(e).__name__}: {e}).")
+                return
             msg = f"Imported {k} labels from {os.path.basename(r.scored)}."
         else:
             return

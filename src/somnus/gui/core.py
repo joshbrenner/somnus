@@ -208,49 +208,55 @@ def suggest_channels(edf: str) -> tuple[list[int], int | None]:
     return list(range(1, n)), n
 
 
-def discover_recordings(folder: str) -> list[Recording]:
-    """List the recordings in a folder, with any scoring, video and tracking.
+def find_edfs(paths: list[str]) -> list[str]:
+    """Every EDF among these files and folders, searching folders recursively."""
+    out = []
+    for p in paths:
+        if os.path.isdir(p):
+            for root, _dirs, files in os.walk(p):
+                out += [os.path.join(root, f) for f in sorted(files)
+                        if f.lower().endswith(".edf")]
+        elif os.path.isfile(p) and p.lower().endswith(".edf"):
+            out.append(p)
+    return out
+
+
+def recording_for(edf: str) -> Recording:
+    """The recording, with any scoring, video and tracking found beside it.
 
     Files are matched by the start of their name, so a recording's companions
     are found whatever suffix the camera or tracker adds. Nothing is opened for
     writing and nothing is copied.
     """
     import glob as _glob
-    out = []
-    for root, _dirs, files in os.walk(folder):
-        names = sorted(files)
-        for f in names:
-            if not f.lower().endswith(".edf"):
-                continue
-            base = f[:-4]
-            edf = os.path.join(root, f)
+    root = os.path.dirname(edf)
+    base = os.path.basename(edf)[:-4]
 
-            def first(pattern: str, exclude: tuple[str, ...] = ()) -> str | None:
-                """The first matching file in this folder, or None."""
-                hits = [p for p in sorted(_glob.glob(os.path.join(root, pattern)))
-                        if not any(x in os.path.basename(p) for x in exclude)]
-                return hits[0] if hits else None
+    def first(pattern: str, exclude: tuple[str, ...] = ()) -> str | None:
+        """The first matching file in this folder, or None."""
+        hits = [p for p in sorted(_glob.glob(os.path.join(root, pattern)))
+                if not any(x in os.path.basename(p) for x in exclude)]
+        return hits[0] if hits else None
 
-            scored = None
-            for s in ("_scored.csv", "_scored_man.csv"):
-                cand = os.path.join(root, base + s)
-                if os.path.exists(cand):
-                    scored = cand
-                    break
+    scored = None
+    for s in ("_scored.csv", "_scored_man.csv"):
+        cand = os.path.join(root, base + s)
+        if os.path.exists(cand):
+            scored = cand
+            break
 
-            # Tracking: the `*coordinates.pkl` convention first, then a
-            # DeepLabCut export. Only files named as DLC writes them are
-            # considered, so a sibling `_scored.csv` is never mistaken for
-            # tracking.
-            coords = (first(base + "*coordinates.pkl")
-                      or first(base + "*DLC*.h5")
-                      or first(base + "*DLC*.csv", exclude=("_full", "_meta")))
-            ts = first(base + "*timestamps.npy")
-            video = first(base + "*.mp4", exclude=("_annotated", "_mask",
-                                                  "_overlay", "_highlights"))
-            out.append(Recording(name=base, edf=edf, scored=scored,
-                                 coords=coords, timestamps=ts, video=video))
-    return out
+    # Tracking: the `*coordinates.pkl` convention first, then a
+    # DeepLabCut export. Only files named as DLC writes them are
+    # considered, so a sibling `_scored.csv` is never mistaken for
+    # tracking.
+    coords = (first(base + "*coordinates.pkl")
+              or first(base + "*DLC*.h5")
+              or first(base + "*DLC*.csv", exclude=("_full", "_meta")))
+    ts = first(base + "*timestamps.npy")
+    video = first(base + "*.mp4", exclude=("_annotated", "_mask",
+                                          "_overlay", "_highlights"))
+    return Recording(name=base, edf=edf, scored=scored,
+                     coords=coords, timestamps=ts, video=video)
 
 
 # ---------------------------------------------------------------------- labels
@@ -437,7 +443,8 @@ class LabelStore:
 
 # --------------------------------------------------------------------- scoring
 def featurize(recording: Recording, cache: str | None = None,
-              project: "Project | None" = None) -> pd.DataFrame:
+              project: "Project | None" = None, progress=None,
+              log=print) -> pd.DataFrame:
     """Feature table for the recording, cached under the project.
 
     The project supplies which channels are EEG and which is EMG.
@@ -445,10 +452,11 @@ def featurize(recording: Recording, cache: str | None = None,
     if cache and os.path.exists(cache):
         return pd.read_csv(cache)
     from somnus.data import datasets as B
+    from somnus.features import labels_from_onehot
     entry = {"recording": recording.name, "edf": recording.edf,
              "dataset": "user", "group": "user",
              "subject": recording.name.split("_")[0],
-             "scored": recording.scored,
+             "scored": None,
              "pkl": None if recording.skip_video else recording.coords,
              # the video carries the real capture time of every frame, and the
              # cache saves reading them again next time
@@ -459,7 +467,15 @@ def featurize(recording: Recording, cache: str | None = None,
     df = B.featurize(entry, mm_per_px=recording.mm_per_px,
                      eeg_chan=project.eeg_chan or None,
                      emg_chan=project.emg_chan,
-                     assume_frame_times=True)
+                     assume_frame_times=True, progress=progress)
+    # Existing scoring is optional here: a file that cannot be read leaves the
+    # epochs unlabeled rather than stopping the recording from being scored.
+    if recording.scored:
+        try:
+            df["state"] = labels_from_onehot(pd.read_csv(recording.scored), len(df))
+        except Exception as e:
+            log(f"    could not read {os.path.basename(recording.scored)} "
+                f"({type(e).__name__}: {e}); scoring without it")
     if cache:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         df.to_csv(cache, index=False)
@@ -488,6 +504,36 @@ def uncertainty(proba: np.ndarray, labels: np.ndarray | None = None,
     if labels is not None and raw is not None:
         u = np.maximum(u, (labels != raw).astype(float))
     return np.clip(u, 0.0, 1.0)
+
+
+def model_output_path(project: Project, name: str) -> str:
+    return os.path.join(project.labels_dir, f"{name}_model_output.csv")
+
+
+def save_model_output(project: Project, name: str, labels: np.ndarray,
+                      raw: np.ndarray, proba: np.ndarray) -> None:
+    """Keep what the model said about every epoch, so the recording can be
+    reviewed later without scoring it again."""
+    project.ensure_dirs()
+    out = pd.DataFrame({"epoch": np.arange(len(labels)),
+                        "t_start": np.arange(len(labels)) * EPOCH_SEC,
+                        "state": labels, "raw_state": raw})
+    for j, s in enumerate(STATES):
+        out[f"p_{s}"] = proba[:, j]
+    out.to_csv(model_output_path(project, name), index=False)
+
+
+def load_model_output(project: Project, name: str
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """The labels and probabilities from the last scoring,
+    or None if this recording has not been scored."""
+    path = model_output_path(project, name)
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path)
+    return (df["state"].to_numpy(dtype=object),
+            df["raw_state"].to_numpy(dtype=object),
+            df[[f"p_{s}" for s in STATES]].to_numpy(dtype=float))
 
 
 # ----------------------------------------------------- hand-off to the scorer UI
@@ -656,19 +702,25 @@ def read_viewer_labels(project: "Project", recording: Recording,
         confirmed = ("Confirmed" in blk
                      and blk["Confirmed"].sum() == per)
 
-        if hit[0] == cur_state:
-            if confirmed and cur_src != SRC_CONFIRMED:
-                store.set_manual_label(e, hit[0], corrected=False)
-                n_con += 1
+        if confirmed:
+            # A confirmed label the model disagrees with is still the user's
+            # correction; only agreement with the model is a confirmation.
+            ms = cur["model_state"].iloc[0] if len(cur) else None
+            corrected = isinstance(ms, str) and hit[0] != ms
+            src = SRC_CORRECTED if corrected else SRC_CONFIRMED
+            if hit[0] != cur_state or cur_src != src:
+                store.set_manual_label(e, hit[0], corrected=corrected)
+                if corrected:
+                    n_cor += 1
+                else:
+                    n_con += 1
             continue
 
+        if hit[0] == cur_state:
+            continue
         store.set_manual_label(e, hit[0], corrected=True)
-        # as above, "correction" back to exactly what the model said is not a correction,
-        # UNLESS the user explicitly confirmed it with the Confirm brush.
-        if confirmed:
-            store.set_manual_label(e, hit[0], corrected=False)
-            n_con += 1
-        elif store.revert_to_model(e):
+        # as above, "correction" back to exactly what the model said is not a correction
+        if store.revert_to_model(e):
             n_rev += 1
         else:
             n_cor += 1
