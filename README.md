@@ -58,7 +58,7 @@ from somnus import load_model
 from somnus.predict import predict
 from somnus.data.datasets import featurize
 
-art = load_model()                      # the packaged v1.0 model
+art = load_model()                      # the packaged v1.1 model
 df = featurize({"recording": "myrec", "edf": "path/to/myrec.edf",
                 "dataset": "user", "group": "user", "subject": "m1",
                 "scored": None, "pkl": None},
@@ -117,16 +117,16 @@ from six labs:
 
 | metric | value |
 |---|---|
-| accuracy | 0.914 |
-| balanced accuracy | 0.858 |
-| Cohen's κ | 0.845 |
+| accuracy | 0.920 |
+| balanced accuracy | 0.855 |
+| Cohen's κ | 0.854 |
 
-On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.975.
+On in-house 5 kHz recordings (leave-one-recording-out): accuracy 0.973.
 
 ## Limitations to keep in mind
 
 - **REM scoring is the weakest performer**
-  (F1 REM 0.728 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
+  (F1 REM 0.731 vs >0.90 for Wake/NREM). Fine-tuning to your own data is the intended remedy!
 - **Every recording must contain both sleep and wake.** The model depends on
   z-scoring within each recording to accept a wide range of recording
   conditions, so on a recording containing only one sleep/wake state — for

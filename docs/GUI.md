@@ -1,6 +1,6 @@
 # Somnus GUI
 
-Tabbed desktop app (PySide6) for scoring recordings with `model_somnus_1.0`,
+Tabbed desktop app (PySide6) for scoring recordings with `model_somnus_1.1`,
 reviewing the result, and fine-tuning on manually corrected labels.
 
 ```bash

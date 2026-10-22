@@ -4,7 +4,7 @@ Quickstart::
 
     from somnus import load_model
     from somnus.predict import predict
-    art = load_model()                       # the packaged v1.0 model
+    art = load_model()                       # the packaged v1.1 model
     labels, proba = predict(art, feature_df) # features from somnus.data.datasets.featurize()
 
 The desktop application: ``somnus-gui`` (or ``python -m somnus.gui``).

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 DEFAULT_ARTIFACT = str(_resource_files("somnus.models")
-                       .joinpath("model_somnus_1.0.json"))
+                       .joinpath("model_somnus_1.1.json"))
 
 
 def load_model(path: str | None = None) -> dict:

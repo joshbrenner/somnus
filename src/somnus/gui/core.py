@@ -173,6 +173,8 @@ class Project:
             if rec.name not in seen:
                 recs.append(rec)
                 seen.add(rec.name)
+        if d.get("model") and not os.path.exists(d["model"]):
+            d["model"] = DEFAULT_ARTIFACT
         return cls(path=path, recordings=recs, **d)
 
     @classmethod

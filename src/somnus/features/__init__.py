@@ -348,11 +348,11 @@ def velocity_features(coords: np.ndarray | None,
 
 # ------------------------------------------------------------------ context
 def add_temporal_context(df: pd.DataFrame, columns: list[str],
-                         windows: tuple[int, ...] = (3, 15)) -> pd.DataFrame:
+                         windows: tuple[int, ...] = (3,)) -> pd.DataFrame:
     """Add each feature's local average and variability over nearby epochs.
 
     Sleep states are defined partly by what surrounds them, so every feature
-    also gets a short-window and a long-window summary of its neighbourhood.
+    also gets a summary of its neighbourhood.
     This uses no labels, only the signal.
     """
     out = df.copy()

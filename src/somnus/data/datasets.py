@@ -40,7 +40,7 @@ from somnus import features as H
 mne.set_log_level("ERROR")
 
 BIDS_STAGE_MAP = {"1": "Wake", "2": "NREM", "3": "REM"}  # 4 = Artifact -> None
-CONTEXT_WINDOWS = (3, 15)
+CONTEXT_WINDOWS = (3,)
 
 
 # ------------------------------------------------------------ pickle loading

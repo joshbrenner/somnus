@@ -1,4 +1,4 @@
-# Somnus — developer reference (v1.0)
+# Somnus — developer reference (v1.1)
 
 Logistic-regression scorer for **Wake / NREM / REM** on 4 s epochs of mouse
 EEG/EMG (+ optional video-derived velocity), with an HMM/Viterbi model for temporal smoothing.
@@ -49,7 +49,7 @@ weights.
 
 | File | What it is |
 |---|---|
-| `src/somnus/models/model_somnus_1.0.json` | **The release artifact.** Plain JSON: columns, centering stats, coefficients, transition matrix, priors. ~15 KB, no pickles. Ships in the wheel. |
+| `src/somnus/models/model_somnus_1.1.json` | **The release artifact.** Plain JSON: columns, centering stats, coefficients, transition matrix, priors. ~15 KB, no pickles. Ships in the wheel. |
 | `src/somnus/predict.py` | **Self-contained scorer** |
 
 ```python
@@ -61,18 +61,18 @@ labels, proba = predict(art, feature_df)   # feature_df from somnus.data.dataset
 
 ## Headline performance
 
-Released variant `unified_z_noind`, 70 features, fitted on 61,164 epochs drawn
+Released variant `unified_z_noind`, 42 features, fitted on 61,164 epochs drawn
 from six labs. Tested on held-out public-corpus mice (74 subjects, 1,515,059
 labeled epochs):
 
 | metric | value |
 |---|---|
-| accuracy | 0.9143 |
-| balanced accuracy | 0.8582 |
-| κ | 0.8447 |
-| REM F1 | 0.7284 |
+| accuracy | 0.9196 |
+| balanced accuracy | 0.8549 |
+| κ | 0.8539 |
+| REM F1 | 0.7305 |
 
-In-house data, leave-one-recording-out: accuracy 0.9749, balanced 0.9543.
+In-house data, leave-one-recording-out: accuracy 0.9726, balanced 0.9592.
 
 These numbers describe the *base* model, which is a starting point rather than
 the product: see the fine-tuning section of the README for why adapting it to
