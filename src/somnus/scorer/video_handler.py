@@ -8,11 +8,13 @@ class VideoHandler:
 
     Seeks by real timestamp rather than frame number, so playback stays lined
     up with the EEG even when the camera dropped frames."""
-    def __init__(self, video_path, cache_dir=None):
+    def __init__(self, video_path, cache_dir=None, duration=None, start_unix=None):
         """Open the video and work out when each frame was captured.
 
         `cache_dir` is where extracted frame times may be saved. Leave it None
-        and nothing is written to disk at all.
+        and nothing is written to disk at all. `duration` and `start_unix` are
+        the EEG's length and EDF start time, used to align wall-clock frame
+        times (see datasets.recording_time).
         """
         self.video_path = video_path
         self.cache_dir = cache_dir
@@ -29,7 +31,7 @@ class VideoHandler:
 
         # Failsafe for missing/invalid video
         if not self.container:
-            self.timestamps = None
+            self.timestamps = self.stream_times = None
             self.nominal_fps = 30.0
             self.last_frame = np.zeros((300, 400, 3), dtype=np.uint8)
             cv2.putText(self.last_frame, "NO VIDEO", (120, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
@@ -43,21 +45,43 @@ class VideoHandler:
         self.current_time = -1.0
         self.last_frame = np.zeros((300, 400, 3), dtype=np.uint8)
         
-        # Frame times: a file beside the video, then the cache, then extract
-        self.timestamps = self._load_or_extract_timestamps()
+        # Two clocks per frame: where it sits in the stream, which seeking and
+        # decoding use, and when it was captured relative to the EEG, which
+        # the requested time is matched against.
+        self.stream_times = self._load_or_extract_timestamps()
+        self.timestamps = self._capture_times(duration, start_unix)
         
         # Setup the initial decoder generator
         self.decoder = self.container.decode(self.stream)
 
-    def _load_or_extract_timestamps(self):
-        """Find the time of every frame: from a file, from the cache, or by reading the video.
+    def _capture_times(self, duration, start_unix):
+        """When each frame was captured, in seconds since the EEG started.
+
+        The camera's own record if one sits beside the video and has a time for
+        every frame; otherwise the stream times.
         """
+        t = self.stream_times
         beside = os.path.splitext(self.video_path)[0] + '_timestamps.npy'
         if os.path.exists(beside):
-            print(f"VideoHandler: Using the camera's frame times from "
-                  f"{os.path.basename(beside)}")
-            return np.load(beside)
+            cam = np.load(beside, allow_pickle=True).ravel().astype(float)
+            if len(cam) == len(t):
+                print(f"VideoHandler: Using the camera's frame times from "
+                      f"{os.path.basename(beside)}")
+                t = cam
+            else:
+                print(f"VideoHandler: {os.path.basename(beside)} has {len(cam)} "
+                      f"times for {len(t)} frames; using the video's own.")
+        if duration is not None:
+            from somnus.data.datasets import recording_time
+            t, note, warn = recording_time(t, duration, start_unix)
+            for msg in (note, warn):
+                if msg:
+                    print(f"VideoHandler: {msg}")
+        return t
 
+    def _load_or_extract_timestamps(self):
+        """Find where every frame sits in the stream: from the cache, or by reading the video.
+        """
         cached = self._cache_path()
         if cached and os.path.exists(cached):
             print(f"VideoHandler: Using frame times cached from an earlier run")
@@ -118,7 +142,7 @@ class VideoHandler:
                 left_diff = exact_time_sec - self.timestamps[idx - 1]
                 right_diff = self.timestamps[idx] - exact_time_sec
                 idx = idx - 1 if left_diff < right_diff else idx
-            target_time = self.timestamps[idx]
+            target_time = self.stream_times[idx]
             target_idx = idx
         else:
             target_time = exact_time_sec

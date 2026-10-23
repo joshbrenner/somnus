@@ -27,17 +27,18 @@ matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QObject, QRect, QThread, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTableWidget,
-    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStyle,
+    QStyleOptionButton, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
-from somnus.gui import core
+from somnus.gui import core, dataset
 
 STATE_COLORS = {"Wake": "#999999", "NREM": "#9470DB", "REM": "#DB3333"}
 STATE_Y = {"Wake": 2, "NREM": 1, "REM": 0}
@@ -99,19 +100,28 @@ class TaskRunner:
         self.parent = parent
         self.thread: QThread | None = None
         self.worker: Worker | None = None
+        self._running = False
 
     def busy(self) -> bool:
-        return self.thread is not None and self.thread.isRunning()
+        return self._running
+
+    def _done(self, *_):
+        self._running = False
 
     def start(self, fn, on_done, on_log, *a, on_step=None, **kw) -> bool:
         """Run fn off the main thread. With on_step, fn also gets a `step`
         callable whose argument is handed to on_step."""
         if self.busy():
             return False
+        if self.thread is not None:
+            self.thread.wait()           # the last job's thread may still be winding down
+        self._running = True
         self.thread = QThread()
         self.worker = Worker(fn, *a, steps=on_step is not None, **kw)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self._done)
+        self.worker.failed.connect(self._done)
         self.worker.progress.connect(on_log)
         if on_step is not None:
             self.worker.stepped.connect(on_step)
@@ -119,7 +129,7 @@ class TaskRunner:
         self.worker.failed.connect(on_done)
         self.worker.finished.connect(on_done)
         for sig in (self.worker.finished, self.worker.failed):
-            sig.connect(self.thread.quit)
+            sig.connect(self.thread.quit, Qt.DirectConnection)
         self.thread.start()
         return True
 
@@ -180,6 +190,41 @@ class FrameTimesDialog(QDialog):
     def values(self) -> float | None:
         mm = float(self.sp_mm.value())
         return mm if mm > 0 else None
+
+
+class CheckHeader(QHeaderView):
+    """A table header whose chosen columns carry a tick box that ticks or
+    clears the whole column."""
+    toggled = Signal(int, bool)
+
+    def __init__(self, columns, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self.states = dict.fromkeys(columns, Qt.Unchecked)
+        self.setSectionsClickable(True)
+
+    def set_state(self, column: int, state):
+        self.states[column] = state
+        self.viewport().update()
+
+    def paintSection(self, painter, rect, index):
+        painter.save()
+        super().paintSection(painter, rect, index)
+        painter.restore()
+        if index in self.states:
+            opt = QStyleOptionButton()
+            size = self.style().pixelMetric(QStyle.PM_IndicatorWidth)
+            opt.rect = QRect(rect.left() + 4, rect.center().y() - size // 2, size, size)
+            opt.state = QStyle.State_Enabled | {
+                Qt.Checked: QStyle.State_On, Qt.Unchecked: QStyle.State_Off,
+                Qt.PartiallyChecked: QStyle.State_NoChange}[self.states[index]]
+            self.style().drawPrimitive(QStyle.PE_IndicatorCheckBox, opt, painter)
+
+    def mousePressEvent(self, ev):
+        i = self.logicalIndexAt(ev.position().toPoint())
+        if i in self.states and self.isEnabled():
+            self.toggled.emit(i, self.states[i] != Qt.Checked)
+        else:
+            super().mousePressEvent(ev)
 
 
 # ------------------------------------------------------------------- hypnogram
@@ -355,8 +400,7 @@ class MainWindow(QMainWindow):
     def _update_gates(self) -> None:
         """Grey out whatever the current state cannot use yet."""
         p = self.project
-        for w in (self.b_add, self.ed_eeg, self.ed_emg, self.tbl,
-                  self.b_all, self.b_none):
+        for w in (self.b_add, self.ed_eeg, self.ed_emg, self.tbl):
             w.setEnabled(p is not None)
         sel = self.checked()
         self.tabs.setTabEnabled(1, bool(sel))
@@ -421,14 +465,23 @@ class MainWindow(QMainWindow):
         lay.addWidget(chan)
 
         self.tbl = QTableWidget(0, 7)
+        hh = CheckHeader((0, 2, 4), self.tbl)
+        hh.toggled.connect(self.on_header_toggled)
+        hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.tbl.setHorizontalHeader(hh)
+        pad = " " * 6                          # room for the header's tick box
         self.tbl.setHorizontalHeaderLabels(
-            ["use", "recording", "labels", "video", "tracking",
+            [pad + "use", "recording", pad + "labels", "video", pad + "tracking",
              "frame timing", "manual epochs"])
-        hh = self.tbl.horizontalHeader()
+        for col, tip in ((0, "Tick to score and evaluate this recording."),
+                         (2, "Tick to import the scoring file found beside the "
+                             "recording as manual labels."),
+                         (4, "Tick to use the tracking file for movement.")):
+            self.tbl.horizontalHeaderItem(col).setToolTip(tip)
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
         hh.setStretchLastSection(False)
-        for col, wdt in ((0, 40), (2, 90), (3, 120), (4, 120), (5, 100), (6, 95)):
+        for col, wdt in ((0, 60), (2, 130), (3, 120), (4, 140), (5, 100), (6, 95)):
             self.tbl.setColumnWidth(col, wdt)
         self.tbl.setTextElideMode(Qt.ElideMiddle)
         self.tbl.setWordWrap(False)
@@ -441,17 +494,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.tbl, 3)
 
         sp = QHBoxLayout()
-        self.b_all = QPushButton("Select all"); self.b_all.clicked.connect(
-            lambda: self.on_check_all(True))
-        self.b_none = QPushButton("Select none"); self.b_none.clicked.connect(
-            lambda: self.on_check_all(False))
         self.b_proceed = QPushButton("Proceed to Score →")
         self.b_proceed.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
         self.b_review = QPushButton("Review && Relabel →")
         self.b_review.setToolTip("Open recordings that have already been scored "
                                  "without scoring them again.")
         self.b_review.clicked.connect(self.go_review)
-        sp.addWidget(self.b_all); sp.addWidget(self.b_none)
         sp.addWidget(self.b_proceed); sp.addWidget(self.b_review)
         self.lbl_nsel = QLabel(""); sp.addWidget(self.lbl_nsel)
         sp.addStretch(1)
@@ -556,6 +604,22 @@ class MainWindow(QMainWindow):
     def _tab_review(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
 
+        ds = QGroupBox("Fine-tuning dataset")
+        dl = QHBoxLayout(ds)
+        self.b_build = QPushButton("BUILD DATASET FOR FINE-TUNING")
+        self.b_build.setStyleSheet("background-color:#1a7f37; color:white; "
+                                   "font-weight:bold; padding:8px 16px;")
+        self.b_build.setToolTip(
+            "Show short clips from every ticked, scored recording in the "
+            "scorer, chosen to give fine-tuning a balanced set of labels. "
+            "Each round is checked against your labels, and more clips are "
+            "offered until the set is complete.")
+        self.b_build.clicked.connect(lambda: self.on_build_dataset())
+        dl.addWidget(self.b_build)
+        self.lbl_needs = QLabel(""); self.lbl_needs.setWordWrap(True)
+        dl.addWidget(self.lbl_needs, 1)
+        lay.addWidget(ds)
+
         top = QHBoxLayout()
         top.addWidget(QLabel("Recording:"))
         self.cmb_review = QComboBox()
@@ -587,17 +651,14 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(box)
         blurb = QLabel(
             "The scorer opens with the model's labels filled in. Fix what is "
-            "wrong (changes save as you go), close it, then click "
-            "<b>Load true labels</b>.")
+            "wrong; changes save as you go, and come into Somnus when you "
+            "close it.")
         blurb.setWordWrap(True)
         v.addWidget(blurb)
         rowb = QHBoxLayout()
         self.b_launch = QPushButton("Open scorer for this recording")
         self.b_launch.clicked.connect(self.on_launch_scorer)
         rowb.addWidget(self.b_launch)
-        self.b_reload = QPushButton("Load true labels")
-        self.b_reload.clicked.connect(self.on_reload_corrections)
-        rowb.addWidget(self.b_reload)
         rowb.addStretch(1)
         v.addLayout(rowb)
         self.lbl_launch = QLabel(""); self.lbl_launch.setWordWrap(True)
@@ -789,7 +850,7 @@ class MainWindow(QMainWindow):
                     log(f"[{i}/{len(queue)}] {r.name}: no manual labels, skipped")
                     continue
                 log(f"[{i}/{len(queue)}] {r.name}: {len(hu)} manual epochs …")
-                cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
+                cache = core.feature_cache(proj, r)
                 feat = core.featurize(r, cache=cache, project=proj)
                 truth = hu.set_index("epoch")["state"]
                 idx = truth.index.to_numpy()
@@ -838,7 +899,7 @@ class MainWindow(QMainWindow):
             rows = []
             for i, r in enumerate(queue, 1):
                 log(f"[{i}/{len(queue)}] {r.name} …")
-                cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
+                cache = core.feature_cache(proj, r)
                 feat = core.featurize(r, cache=cache, project=proj)
                 lab, _ = core.score(feat, model, decode=decode, stickiness=stick)
                 # prefer manual labels wherever they exist
@@ -905,23 +966,23 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- project ops
     def on_new(self):
-        """Create a new project folder."""
-        d = QFileDialog.getExistingDirectory(self, "Choose an empty folder for "
-                                                  "the new project")
-        if not d:
+        """Create a new project in its own folder."""
+        parent = QFileDialog.getExistingDirectory(self, "Choose where to put "
+                                                       "the new project")
+        if not parent:
             return
-        name, ok = QInputDialog.getText(
-            self, "Name this project", "Project name:",
-            text=os.path.basename(d.rstrip("/")) or "somnus_project")
-        if not ok:
+        name, ok = QInputDialog.getText(self, "Name this project",
+                                        "Project name:", text="somnus_project")
+        name = name.strip().replace(os.sep, "_")
+        if not ok or not name:
             return
-        name = name.strip() or os.path.basename(d.rstrip("/"))
+        d = os.path.join(parent, name)
         if os.path.exists(os.path.join(d, "project.json")):
             if QMessageBox.question(
                     self, "Folder already has a project",
-                    "This folder already contains a Somnus project. "
-                    "Starting a new one here will overwrite its recording "
-                    "list and settings. Overwrite it?",
+                    f"{d} already contains a Somnus project. Starting a new "
+                    f"one there will overwrite its recording list and "
+                    f"settings. Overwrite it?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No) != QMessageBox.Yes:
                 return
@@ -1028,6 +1089,53 @@ class MainWindow(QMainWindow):
         known = res["found"] - len(res["new"])
         self.log(f"added {len(res['new'])} recording(s) from {res['where']}"
                  + (f"; {known} already in the project" if known else ""))
+        self.import_labels([r for r in res["new"] if r.scored])
+
+    def import_labels(self, recs: list[core.Recording]):
+        """Import the scoring files found beside these recordings as manual labels."""
+        recs = [r for r in recs if r.scored
+                and not core.LabelStore(self.project, r.name).n_imported()]
+        if not recs:
+            return
+        if self.runner.busy():
+            QMessageBox.information(self, "Busy", "Wait for the current job "
+                                    "to finish, then tick the labels again.")
+            self.refresh_project()
+            return
+        proj = self.project
+
+        def job(log):
+            n = 0
+            for r in recs:
+                try:
+                    k = core.import_scoring(proj, r)
+                except Exception as e:
+                    log(f"could not import {os.path.basename(r.scored)} "
+                        f"({type(e).__name__}: {e})")
+                    continue
+                log(f"imported {k} labelled epochs from {os.path.basename(r.scored)}")
+                n += 1
+            return dict(kind="import", names=[r.name for r in recs])
+
+        self.runner.start(job, self.after_import, self.log)
+
+    @Slot(object)
+    def after_import(self, res):
+        if isinstance(res, dict) and res.get("kind") == "import":
+            for name in res["names"]:
+                self._reload_store(name)
+            self.refresh_project(); self.refresh_needs()
+
+    def remove_labels(self, recs: list[core.Recording]):
+        """Take these recordings' imported labels out again."""
+        for r in recs:
+            store = core.LabelStore(self.project, r.name)
+            n = store.remove_imported()
+            if n:
+                store.save()
+                self._reload_store(r.name)
+                self.log(f"removed {n} imported labels from {r.name}")
+        self.refresh_project(); self.refresh_needs()
 
     def refresh_project(self):
         """Redraw the project table from the project on disk."""
@@ -1057,9 +1165,21 @@ class MainWindow(QMainWindow):
                 return it
 
             self.tbl.setItem(row, 1, QTableWidgetItem(r.name))
-            self.tbl.setItem(row, 2, path_cell(r.scored))
+            lab = path_cell(r.scored)
+            if r.scored:
+                lab.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                             | Qt.ItemIsSelectable)
+                lab.setCheckState(Qt.Checked if store.n_imported() else Qt.Unchecked)
+                lab.setToolTip(f"{r.scored}\n\nTick to import this scoring as "
+                               f"manual labels; untick to take them out again.")
+            self.tbl.setItem(row, 2, lab)
             self.tbl.setItem(row, 3, path_cell(r.video))
-            self.tbl.setItem(row, 4, path_cell(r.coords))
+            trk = path_cell(r.coords)
+            if r.coords:
+                trk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                             | Qt.ItemIsSelectable)
+                trk.setCheckState(Qt.Unchecked if r.skip_video else Qt.Checked)
+            self.tbl.setItem(row, 4, trk)
             if not r.coords:
                 vel = QTableWidgetItem("—")
             elif r.skip_video:
@@ -1092,12 +1212,31 @@ class MainWindow(QMainWindow):
             nh.setTextAlignment(Qt.AlignCenter)
             self.tbl.setItem(row, 6, nh)
         self.tbl.blockSignals(False)
+        hh = self.tbl.horizontalHeader()
+        for col, rows in ((0, p.recordings), (2, [r for r in p.recordings if r.scored]),
+                          (4, [r for r in p.recordings if r.coords])):
+            ticks = [self.tbl.item(p.recordings.index(r), col).checkState() == Qt.Checked
+                     for r in rows]
+            hh.set_state(col, Qt.Checked if ticks and all(ticks) else
+                         Qt.PartiallyChecked if any(ticks) else Qt.Unchecked)
         self._update_nsel()
         self.refresh_finetune_list()
 
     def on_tbl_item_changed(self, item: QTableWidgetItem):
         """Keep the project in step when a row is ticked or renamed."""
-        if item.column() != 0 or not self.project:
+        if not self.project or item.row() >= len(self.project.recordings):
+            return
+        r = self.project.recordings[item.row()]
+        if item.column() == 2:
+            if item.checkState() == Qt.Checked:
+                self.import_labels([r])
+            else:
+                self.remove_labels([r])
+            return
+        if item.column() == 4:
+            self.set_tracking([r], item.checkState() == Qt.Checked)
+            return
+        if item.column() != 0:
             return
         row = item.row()
         if row < len(self.project.recordings):
@@ -1106,6 +1245,28 @@ class MainWindow(QMainWindow):
             self.project.save()
             self._update_nsel()
             self.refresh_score_list()
+
+    def on_header_toggled(self, column: int, on: bool):
+        """Tick or clear a whole column from its header."""
+        if not self.project:
+            return
+        recs = self.project.recordings
+        if column == 0:
+            self.on_check_all(on)
+        elif column == 2:
+            if on:
+                self.import_labels([r for r in recs if r.scored])
+            else:
+                self.remove_labels([r for r in recs if r.scored])
+        elif column == 4:
+            self.set_tracking([r for r in recs if r.coords], on)
+
+    def set_tracking(self, recs: list[core.Recording], on: bool):
+        """Use, or stop using, these recordings' tracking for movement."""
+        for r in recs:
+            r.skip_video = not on
+        self.project.save()
+        self.refresh_project(); self.refresh_score_list()
 
     def on_check_all(self, on: bool):
         """Tick or untick every recording at once."""
@@ -1323,6 +1484,7 @@ class MainWindow(QMainWindow):
         self.cmb_review.blockSignals(False)
         if names and self.rec_name not in names:
             self.load_for_review(names[0])
+        self.refresh_needs()
         self._update_gates()
 
     def on_score(self):
@@ -1349,10 +1511,10 @@ class MainWindow(QMainWindow):
             for i, r in enumerate(queue, 1):
                 log(f"[{i}/{n}] {r.name}: featurizing …")
                 step((i, n, r.name, "featurizing", 0, 0))
-                cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
+                cache = core.feature_cache(proj, r)
                 try:
                     feat = core.featurize(
-                        r, cache=cache, project=proj, log=log,
+                        r, cache=cache, project=proj,
                         progress=lambda stage, done, total, i=i, name=r.name:
                             step((i, n, name, stage, done, total)))
                 except Exception as e:
@@ -1370,16 +1532,6 @@ class MainWindow(QMainWindow):
                 n_new = store.set_model_labels(
                     feat["epoch"].to_numpy(), feat["t_start"].to_numpy(),
                     lab, proba.max(axis=1), model)
-                if r.scored and store.n_manual() == 0:
-                    try:
-                        k = store.import_manual(r.scored, len(feat))
-                    except Exception as e:
-                        log(f"    could not import {os.path.basename(r.scored)} "
-                            f"({type(e).__name__}: {e}); keeping the model's "
-                            f"labels only")
-                        k = 0
-                    if k:
-                        log(f"    imported {k} existing manual labels")
                 store.save()
                 core.save_model_output(proj, r.name, lab, raw, proba)
                 log(f"    wrote {n_new} model rows "
@@ -1449,14 +1601,14 @@ class MainWindow(QMainWindow):
                 f"({100*over/max(len(lab),1):.2f}%)   "
                 f"QC flags {len(core.qc_flags(lab))}",
             ]
-            truth = d["feat"]["state"].to_numpy() \
-                if "state" in d["feat"] else None
-            if truth is not None:
-                m = np.isin(truth, core.STATES)
-                if m.any():
-                    lines.append(
-                        f"   agreement with existing labels "
-                        f"{(lab[m]==truth[m]).mean():.4f} on {int(m.sum())} epochs")
+            hu = d["store"].df[d["store"].manual_mask()]
+            e = hu["epoch"].to_numpy(int)
+            ok = (e >= 0) & (e < len(lab))
+            if ok.any():
+                lines.append(
+                    f"   agreement with your manual labels "
+                    f"{(lab[e[ok]] == hu['state'].to_numpy()[ok]).mean():.4f} "
+                    f"on {int(ok.sum())} epochs")
             lines.append("")
         self.s_summary.setPlainText("\n".join(lines))
         self.log(f"scored {len(res)} recording(s)")
@@ -1479,7 +1631,6 @@ class MainWindow(QMainWindow):
         self.lbl_epoch.setText("—")
         self.lbl_qinfo.setText("")
         self.lbl_launch.setText("")
-        self._update_truth_button()
         self._ft_stamp = None
         self._ft_selected = {}
         self.tbl_ft.setRowCount(0)
@@ -1549,19 +1700,7 @@ class MainWindow(QMainWindow):
             f"{len(self.labels)} epochs — <b>{int(eligible.sum())}</b> below "
             f"the {thr:.2f} threshold (the scorer's <i>Next low certainty</i> "
             f"button walks these) — {n_man} manually labeled.")
-        self._update_truth_button()
         self.goto_epoch(self.cur_epoch if self.cur_epoch < len(self.labels) else 0)
-
-    def _update_truth_button(self):
-        """Enable Load true labels only when there are labels to load."""
-        on = False
-        if self.rec_name and self.project is not None:
-            r = self.project.get(self.rec_name)
-            viewer = os.path.join(self.project.labels_dir,
-                                  f"{self.rec_name}_scored.csv")
-            on = bool(r is not None and r.scored) or os.path.exists(viewer) \
-                or (self.store is not None and self.store.n_manual() > 0)
-        self.b_reload.setEnabled(on)
 
     def goto_epoch(self, epoch: int):
         if self.labels is None or not len(self.labels):
@@ -1592,24 +1731,28 @@ class MainWindow(QMainWindow):
             return
         scored, meta = core.write_viewer_bundle(
             self.project, r, self.labels, self.proba, self.raw, self.store)
+        args = [r.edf, scored, meta, f"{float(self.sp_thr.value()):.4f}"]
+        if self.project.eeg_chan:
+            args.append(",".join(str(i) for i in self.project.eeg_chan))
+        self._launch(args, r.name)
 
+    def _launch(self, args: list[str], what: str, playlist: bool = False):
+        """Start the scorer and follow it until it closes."""
         # Launch the scorer as a module, so it works the same whether Somnus
         # was installed or is being run from a source checkout.
         import subprocess
-        cmd = [sys.executable, "-m", "somnus.scorer", r.edf, scored, meta,
-               f"{float(self.sp_thr.value()):.4f}"]
-        if self.project.eeg_chan:
-            cmd.append(",".join(str(i) for i in self.project.eeg_chan))
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+            proc = subprocess.Popen([sys.executable, "-m", "somnus.scorer", *args],
+                                    stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True)
         except Exception as e:
             QMessageBox.critical(self, "Could not launch scorer", str(e)); return
         self._scorer_proc = proc
-        self.b_launch.setEnabled(False)
+        self._scorer_target = None if playlist else what
+        self.b_launch.setEnabled(False); self.b_build.setEnabled(False)
         self.lbl_launch.setText("Launching the scorer — this can take a few "
                                 "seconds…")
-        self.log(f"launched scorer on {r.name} (pid {proc.pid})")
+        self.log(f"launched scorer on {what} (pid {proc.pid})")
         self._watch_thread = QThread()
         self._watcher = ScorerWatch(proc)
         self._watcher.moveToThread(self._watch_thread)
@@ -1628,44 +1771,159 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def on_scorer_closed(self, code: int):
-        self.b_launch.setEnabled(True)
-        self.lbl_launch.setText(
-            "Scorer closed. Click Load true labels to bring your edits in.")
-        self._update_truth_button()
-
-    def on_reload_corrections(self):
-        """Pull the manual labels in, from the scorer or from a scoring file."""
-        if not self.rec_name or self.project is None or self.store is None:
-            return
-        r = self.project.get(self.rec_name)
-        if r is None:
-            return
-        viewer = os.path.join(self.project.labels_dir, f"{r.name}_scored.csv")
-        if os.path.exists(viewer):
-            res = core.read_viewer_labels(self.project, r, self.store,
-                                          len(self.labels))
-            msg = (f"Loaded {res['corrected']} corrected, "
-                   f"{res.get('confirmed', 0)} confirmed, "
-                   f"{res['excluded']} excluded, "
-                   f"{res.get('reverted', 0)} reverted.")
-        elif r.scored:
-            try:
-                k = self.store.import_manual(r.scored, len(self.labels))
-            except Exception as e:
-                QMessageBox.warning(
-                    self, "Could not read scoring",
-                    f"{os.path.basename(r.scored)} could not be read "
-                    f"({type(e).__name__}: {e}).")
-                return
-            msg = f"Imported {k} labels from {os.path.basename(r.scored)}."
+        self.b_launch.setEnabled(True); self.b_build.setEnabled(True)
+        if self._scorer_target is None:
+            self._after_playlist()
         else:
+            self._load_scorer_labels(self._scorer_target)
+
+    def _reload_store(self, name: str):
+        """Read a recording's labels back from disk after the scorer changed them."""
+        if name in self.scored:
+            self.scored[name]["store"] = core.LabelStore(self.project, name)
+            if name == self.rec_name:
+                self.store = self.scored[name]["store"]
+                self.rebuild_review()
+
+    def _load_scorer_labels(self, name: str):
+        """Bring in what the user changed or confirmed in the scorer."""
+        r, d = self.project.get(name), self.scored.get(name)
+        if r is None or d is None:
             return
-        self.store.save()
-        msg += (f" {self.store.n_manual()} manual labels ready for "
-                f"fine-tuning.")
+        res = core.read_viewer_labels(self.project, r, d["store"], len(d["labels"]))
+        d["store"].save()
+        self._reload_store(name)
+        msg = (f"Brought in {res['corrected']} corrected, {res['confirmed']} "
+               f"confirmed, {res['excluded']} excluded and {res['reverted']} "
+               f"reverted epochs from {name}.")
         self.lbl_launch.setText(msg)
-        self.rebuild_review(); self.refresh_project()
+        self.refresh_project(); self.refresh_needs()
         self.log(msg)
+
+    # ---------------------------------------------------- fine-tuning dataset
+    def refresh_needs(self):
+        """Show what the fine-tuning set holds against what it needs."""
+        names = self._reviewable()
+        if not self.project or not names:
+            self.lbl_needs.setText("<span style='color:#555'>Score the ticked "
+                                   "recordings to build a fine-tuning set.</span>")
+            return
+        need = {n.key: n for n in dataset.needs(self.project, names)}
+
+        def cell(n):
+            if n.counted_only:
+                return f"{int(n.have)}"
+            colour, mark = ("#1a7f37", "✓") if n.met else ("#b00", "✗")
+            text = n.text().split(": ", 1)[1]
+            return f"<span style='color:{colour}'>{mark} {text}</span>"
+
+        rows = "".join(f"<tr><td><b>{s}</b></td><td>{cell(need[s])}</td>"
+                       f"<td>{cell(need[s + ' bouts'])}</td></tr>" for s in core.STATES)
+        rest = " &nbsp;·&nbsp; ".join(
+            f"{n.key}: {cell(n)}" for n in (need["Recordings labelled"],
+                                            need["Confirmed or imported"]))
+        self.lbl_needs.setText(
+            "<table cellspacing='0' cellpadding='2'><tr><th></th>"
+            "<th align='left'>Epochs</th><th align='left'>Bouts</th></tr>"
+            f"{rows}</table>{rest}")
+
+    def on_build_dataset(self, rem_search: bool = False):
+        """Show the next round of clips in the scorer, chosen to complete the
+        fine-tuning set."""
+        if not self.project or self.runner.busy():
+            return
+        names = self._reviewable()
+        if not names:
+            QMessageBox.information(self, "Nothing scored",
+                                    "Score the ticked recordings first.")
+            return
+        path = core.playlist_path(self.project)
+        if not rem_search and os.path.exists(path):
+            import json
+            with open(path) as fh:
+                segs = json.load(fh)["segments"]
+            left = sum(not seg.get("done") for seg in segs)
+            if left and QMessageBox.question(
+                    self, "Clips still to label",
+                    f"{left} of the {len(segs)} clips set out last time are "
+                    f"not done yet. Carry on with them?") == QMessageBox.Yes:
+                self._launch(["--playlist", path], f"{left} clips", playlist=True)
+                return
+        if not rem_search and all(n.met for n in dataset.needs(self.project, names)):
+            self._dataset_ready()
+            return
+        unmet = [n.text() for n in dataset.needs(self.project, names) if not n.met]
+        if unmet:
+            self.log("this round goes after: " + "; ".join(unmet))
+        clips = dataset.plan_round(self.project, names, rem_search=rem_search)
+        if not clips:
+            QMessageBox.information(
+                self, "No clips left",
+                "Every part of these recordings that could be offered has "
+                "been labelled already.")
+            return
+        path = core.write_playlist(self.project, clips, float(self.sp_thr.value()))
+        minutes = len(clips) * dataset.CLIP_EPOCHS * core.EPOCH_SEC / 60
+        self._launch(["--playlist", path],
+                     f"{len(clips)} clips ({minutes:.0f} min)", playlist=True)
+
+    def _after_playlist(self):
+        """Bring in the clips' labels, then decide what to offer next."""
+        import json
+        res = core.read_playlist_labels(self.project)
+        for name in res:
+            self._reload_store(name)
+        n_cor = sum(x["corrected"] for x in res.values())
+        n_con = sum(x["confirmed"] for x in res.values())
+        self.log(f"brought in {n_cor} corrected and {n_con} confirmed epochs "
+                 f"from the clips")
+        self.refresh_project(); self.refresh_needs()
+        with open(core.playlist_path(self.project)) as fh:
+            left = sum(not seg.get("done") for seg in json.load(fh)["segments"])
+        state = dataset.needs(self.project, self._reviewable())
+        unmet = [n for n in state if not n.met]
+        if not unmet:
+            self._dataset_ready()
+        elif left:
+            self.lbl_launch.setText(f"{left} clips are not done yet. Click "
+                                    f"BUILD DATASET to carry on with them.")
+        elif {n.key for n in unmet} & dataset.REM_KEYS:
+            short = [n.text() for n in unmet if n.key in dataset.REM_KEYS]
+            box = QMessageBox(self)
+            box.setWindowTitle("Not enough REM yet")
+            box.setText(
+                "The labels so far are short on REM: " + "; ".join(short)
+                + ". Fine-tuning needs these to learn REM with confidence.\n\n"
+                "Search again for stretches that look like REM, or go through "
+                "your recordings yourself?")
+            search = box.addButton("Search again for REM", QMessageBox.AcceptRole)
+            manual = box.addButton("Go through recordings myself", QMessageBox.ActionRole)
+            box.addButton("Not now", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is search:
+                self.on_build_dataset(rem_search=True)
+            elif box.clickedButton() is manual:
+                self.tabs.setCurrentIndex(2)
+                self.lbl_launch.setText(
+                    "Open a recording in the scorer and label the REM you find. "
+                    "Your labels join the fine-tuning set when you close it, and "
+                    "replace any earlier label for the same epochs.")
+        elif QMessageBox.question(
+                self, "More labels needed",
+                "Still needed: " + "; ".join(n.text() for n in unmet)
+                + f".\n\nSet out another {dataset.NEXT_ROUND_CLIPS} clips?") \
+                == QMessageBox.Yes:
+            self.on_build_dataset()
+
+    def _dataset_ready(self):
+        state = {n.key: n for n in dataset.needs(self.project, self._reviewable())}
+        counts = ", ".join(f"{int(state[s].have)} {s}" for s in core.STATES)
+        if QMessageBox.question(
+                self, "Fine-tuning set complete",
+                f"The labels meet every target ({counts}). Go to Fine-tune?") \
+                == QMessageBox.Yes:
+            self.refresh_finetune_list()
+            self.tabs.setCurrentIndex(3)
 
     # -------------------------------------------------------------- fine-tune
     def refresh_finetune_list(self):
@@ -1769,7 +2027,7 @@ class MainWindow(QMainWindow):
                 st = core.LabelStore(proj, r.name)
                 if st.n_manual() == 0:
                     continue
-                cache = os.path.join(proj.cache_dir, r.name + "_features.csv")
+                cache = core.feature_cache(proj, r)
                 if not os.path.exists(cache):
                     log(f"featurizing {r.name} …")
                 feat = core.featurize(r, cache=cache, project=proj)

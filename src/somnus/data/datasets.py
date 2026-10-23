@@ -183,6 +183,39 @@ def video_frame_rate(video: str) -> float | None:
         return None
 
 
+def recording_time(t: np.ndarray, duration: float,
+                   start_unix: float | None) -> tuple[np.ndarray, str | None,
+                                                     str | None]:
+    """Frame times as seconds since the EEG started.
+
+   For cameras using Unix timestamps, frames are aligned to the EDF start time.
+   Because EDF headers lack time zone metadata and occasionally misreport local
+   time as UTC, the total clock offset is calculated as the nearest quarter-hour
+   (to account for valid time zone differences) plus the camera's hardware lag.
+   Returns the aligned times, an operation log, and an assumption warning.
+    """
+    if not len(t) or t[0] <= duration:
+        return t, None, None
+    if start_unix is not None:
+        gap = t[0] - start_unix
+        zone = 900.0 * round(gap / 900.0)
+        lag = gap - zone
+        # beyond 14 h the EDF date cannot be the camera's (e.g. anonymized)
+        if abs(zone) <= 14 * 3600:
+            note = (f"wall-clock frame times aligned to the EDF start; camera "
+                    f"started {lag:+.1f} s after the EEG")
+            warn = None if abs(lag) <= 60 else (
+                f"the camera clock is {lag:+.0f} s from the EDF start once the "
+                f"time zone is allowed for. If the camera did not really start "
+                f"that far from the EEG, movement is misaligned by up to 15 min.")
+            return t - (start_unix + zone), note, warn
+    return (t - t[0],
+            "wall-clock frame times; first frame taken as the EEG start",
+            "frame times are wall-clock but the EDF start time is missing or "
+            "does not match them, so the camera is assumed to have started "
+            "with the EEG.")
+
+
 def resolve_frame_times(base: str, n_frames: int, duration: float,
                         meta: dict, search_dir: str,
                         video: str | None = None,
@@ -401,6 +434,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
     # --- velocity (only if the recording has video tracking) ---
     vel_src = "none"
     vel_warn = None
+    vel_cover = 0.0
     vel_unit = "px/s"
     if entry.get("pkl"):
         report("movement")
@@ -417,7 +451,19 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
                     f"command line); to score without velocity, drop the "
                     f"tracking file from the entry.")
             print(f"[velocity] {vel_warn}")
+        start = raw.info["meas_date"]
+        t, aligned, align_warn = recording_time(
+            t, raw.n_times / sfreq, start.timestamp() if start else None)
+        if aligned:
+            vel_src = f"{vel_src}; {aligned}"
+        if align_warn:
+            print(f"[velocity] {entry['recording']}: {align_warn}")
         vel = H.velocity_features(coords, t, n_ep)
+        vel_cover = float(np.isfinite(vel["velocity"].to_numpy(float)).mean())
+        if vel_cover < 0.9:
+            print(f"[velocity] {entry['recording']}: only {vel_cover:.0%} of "
+                  f"epochs have a movement value; check that the video covers "
+                  f"the recording and its frame times line up with the EEG.")
         if mm_per_px:
             k = float(mm_per_px)
             vel["velocity"] = vel["velocity"] * k
@@ -470,7 +516,7 @@ def featurize(entry: dict, probe_seconds: float = 900.0,
         "emg_edge_hz": round(emg_edge, 1), "tiers": sorted(tiers),
         "emg_bands": sorted(emg_bands), "velocity_source": vel_src,
         "velocity_warning": vel_warn,
-        "velocity_unit": vel_unit,
+        "velocity_unit": vel_unit, "velocity_coverage": round(vel_cover, 3),
         "eeg_channel": names[best], "emg_channel": names[emg_i],
         "n_epochs": int(n_ep),
     }

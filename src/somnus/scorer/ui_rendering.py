@@ -27,8 +27,8 @@ LABELS = ('Unknown',) + PAINTABLE
 # background. Bins a person confirmed or changed keep the hue but gain OKLab
 # lightness and chroma, so they read as the same color, stronger.
 MODEL_ALPHA = 0.20
-LIGHTNESS_GAIN = 0.10
-CHROMA_GAIN = 2.5
+LIGHTNESS_GAIN = 0.05
+CHROMA_GAIN = 1.75
 
 _M1 = np.array([[0.4122214708, 0.5363325363, 0.0514459929],
                 [0.2119034982, 0.6806995451, 0.1073969566],
@@ -71,6 +71,11 @@ RENDER_CACHE = {
     'eeg_base': None,
     'side_img': None,
 }
+
+def clear_render_cache():
+    """Make the next frame redraw every panel, as after switching recording."""
+    RENDER_CACHE['psd_img'] = None
+
 
 def draw_state_probability_panel(state, w, h, window_start_sec, window_dur):
     """Draw what the model believes about the stretch on screen.
@@ -223,6 +228,17 @@ def draw_eeg_side_panel(state, data_slice, ch_names, window_start_sec, window_du
 
                 cv2.putText(img, t_label, (bar_x - pixel_width - 5, bar_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
+    # Outside the playlist segment: dimmed, with each edge marked
+    if state.segment is not None:
+        x0, x1 = (int((t - window_start_sec) / window_duration * w) for t in state.segment)
+        img[:, :max(0, min(w, x0))] //= 4
+        img[:, max(0, min(w, x1)):] //= 4
+        for x, text, dx in ((x0, "segment start", 6), (x1, "segment end", -95)):
+            if 0 <= x <= w:
+                cv2.line(img, (x, 0), (x, h), (0, 200, 255), 2)
+                cv2.putText(img, text, (x + dx, h - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45, (0, 200, 255), 1, cv2.LINE_AA)
+
     return img
 
 def _nav_pair(img, state, y, w_side, label, fill, border, target):
@@ -248,16 +264,49 @@ def _nav_pair(img, state, y, w_side, label, fill, border, target):
         state.nav_buttons.append(((x1, y, x2, y + 30), target, direction))
 
 
+def _draw_segment_nav(img, state, w_side):
+    """Previous / next buttons for a playlist; next reads Close on the last segment."""
+    i, n = state.segment_nav
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(img, "SEGMENTS", (10, 25), font, 0.6, (255, 255, 255), 1)
+    cv2.line(img, (10, 35), (w_side - 10, 35), (100, 100, 100), 1)
+    cv2.putText(img, f"{i + 1} of {n}", (10, 62), font, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
+    last = i + 1 == n
+    for y, text, direction, fill in ((80, "Previous", -1, (70, 70, 70)),
+                                     (136, "Close" if last else "Next", 1, (55, 127, 26))):
+        x1, x2 = 10, w_side - 10
+        cv2.rectangle(img, (x1, y), (x2, y + 44), fill, -1)
+        (tw, th), _ = cv2.getTextSize(text, font, 0.6, 1)
+        yc = y + 22
+        if direction < 0:
+            tri = [[x1 + 14, yc], [x1 + 22, yc - 6], [x1 + 22, yc + 6]]
+        elif not last:
+            tri = [[x2 - 14, yc], [x2 - 22, yc - 6], [x2 - 22, yc + 6]]
+        else:
+            tri = None
+        if tri:
+            cv2.fillPoly(img, [np.array(tri, dtype=np.int32)], (255, 255, 255), cv2.LINE_AA)
+        cv2.putText(img, text, ((x1 + x2 - tw) // 2, yc + th // 2), font, 0.6,
+                    (255, 255, 255), 1, cv2.LINE_AA)
+        state.nav_buttons.append(((x1, y, x2, y + 44), 'segment', direction))
+    cv2.putText(img, "Next confirms the labels", (10, 206), font, 0.4, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.putText(img, "left in this segment.", (10, 224), font, 0.4, (170, 170, 170), 1, cv2.LINE_AA)
+    return img
+
+
 def draw_sidebar(state, h, w_side):
     """Draw the side panel: previous / next buttons per state and for low certainty."""
     img = np.zeros((h, w_side, 3), dtype=np.uint8)
     cv2.rectangle(img, (0, 0), (w_side, h), (30, 30, 30), -1)
     cv2.line(img, (0, 0), (0, h), (100, 100, 100), 1)
     
+    state.nav_buttons = []
+    if state.segment_nav is not None:
+        return _draw_segment_nav(img, state, w_side)
+
     cv2.putText(img, "BOUT NAVIGATION", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     cv2.line(img, (10, 35), (w_side-10, 35), (100, 100, 100), 1)
     
-    state.nav_buttons = []
     y = 46
     for label in NAV_LABELS:
         _nav_pair(img, state, y, w_side, label, STRONG_COLORS[label], None, label)

@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import re
+import json
+from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
@@ -11,12 +13,13 @@ from mne.filter import filter_data
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QKeySequence, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QFileDialog, QLabel, QMainWindow,
-    QMessageBox, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel,
+    QMainWindow, QMessageBox, QVBoxLayout, QWidget,
 )
 
 from somnus.scorer.video_handler import VideoHandler
-from somnus.scorer.ui_rendering import render_composite, WINDOW_NAME, PAINTABLE, LABELS
+from somnus.scorer.ui_rendering import (render_composite, clear_render_cache,
+                                        WINDOW_NAME, PAINTABLE, LABELS)
 
 # Which state a bin is shown as when it carries more than one.
 PRECEDENCE = ('Artifact', 'REM', 'NREM', 'Wake', 'Unclear')
@@ -64,6 +67,36 @@ def find_associated_video(edf_path):
             
     return best_video
 
+# One opened recording: everything the window draws from.
+View = namedtuple("View", "state raw video num_eeg v_range")
+
+
+def _hms(t_sec):
+    m, s = divmod(int(t_sec), 60)
+    return f"{m // 60:02d}:{m % 60:02d}:{s:02d}"
+
+
+class Playlist:
+    """Segments of several recordings to review in turn.
+
+    Read from a JSON file the Somnus app writes
+    """
+    def __init__(self, path):
+        self.path = path
+        with open(path) as fh:
+            self.data = json.load(fh)
+        self.recordings = self.data["recordings"]
+        self.segments = self.data["segments"]
+        self.index = next((i for i, seg in enumerate(self.segments)
+                           if not seg.get("done")), 0)
+
+    def save(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(self.data, fh, indent=2)
+        os.replace(tmp, self.path)
+
+
 class SleepReviewState:
     """Everything the scorer window is currently showing and holding."""
     def __init__(self, csv_path, sfreq, ch_names, n_times,
@@ -90,6 +123,8 @@ class SleepReviewState:
         self.active_brush = None
         self.paint_mode = 'Paint'
         self.range_start_sec = None
+        self.segment = None                # (start, end) s while a playlist segment is shown
+        self.segment_nav = None            # (index, count) of that segment
         self.nav_buttons = []
         self.message = print
         
@@ -251,6 +286,7 @@ class SleepReviewState:
             self.message("No model review metadata loaded.")
             return
         cand = np.flatnonzero(self._low_mask())
+        cand = cand[self._inside(cand * self.epoch_sec)]
         if cand.size == 0:
             self.message(f"No epochs below the {self.certainty_threshold:.2f} "
                          f"certainty threshold.")
@@ -280,19 +316,36 @@ class SleepReviewState:
                      + ("" if hit.size else "  (wrapped)"))
 
     # --------------------------------------------------------------- navigation
+    def bounds(self):
+
+        return self.segment or (0.0, self.duration_sec)
+
+    def view_range(self):
+
+        lo, hi = self.bounds()
+        if self.segment:
+            pad = self.window_width_sec / 2.0
+            lo, hi = max(0.0, lo - pad), min(self.duration_sec, hi + pad)
+        return lo, hi
+
+    def _inside(self, t_sec):
+        lo, hi = self.bounds()
+        return (t_sec >= lo) & (t_sec < hi)
+
     def max_start(self):
-        """The latest the window can start and still be filled by the recording."""
-        return max(0.0, self.duration_sec - self.window_width_sec)
+        """The latest the window can start and still be filled."""
+        lo, hi = self.view_range()
+        return max(lo, hi - self.window_width_sec)
         
     def scroll_to(self, start_sec):
         """Show the window starting here, playing from its left edge."""
-        self.current_time_sec = float(np.clip(start_sec, 0.0, self.max_start()))
+        self.current_time_sec = float(np.clip(start_sec, self.view_range()[0], self.max_start()))
         self.playback_offset_sec = 0.0
 
     def _center_on(self, t_sec):
         """Put this moment mid-window and play from it."""
         self.current_time_sec = float(np.clip(
-            t_sec - self.window_width_sec / 2.0, 0.0, self.max_start()))
+            t_sec - self.window_width_sec / 2.0, self.view_range()[0], self.max_start()))
         self.playback_offset_sec = t_sec - self.current_time_sec
 
     def _playhead(self):
@@ -312,7 +365,7 @@ class SleepReviewState:
         """
         starts, codes = self._bouts()
         here = self._playhead()
-        mine = codes == LABELS.index(target_state)
+        mine = (codes == LABELS.index(target_state)) & self._inside(starts)
         if direction > 0:
             hit = starts[mine & (starts > here)][:1]
         else:
@@ -330,14 +383,15 @@ class SleepReviewState:
         here = self._playhead()
         i = np.searchsorted(starts, here, side='right') - 1
         cur = starts[i] if i >= 0 else 0.0
+        inside = self._inside(starts)
         if direction > 0:
-            later = starts[starts > cur + 0.1]
+            later = starts[(starts > cur + 0.1) & inside]
             if not later.size:
                 return
             target = later[0]
         else:
-            earlier = starts[starts < cur - 0.1]
-            target = earlier[-1] if earlier.size else 0.0
+            earlier = starts[(starts < cur - 0.1) & inside]
+            target = earlier[-1] if earlier.size else self.bounds()[0]
         self._center_on(float(target))
 
     # ----------------------------------------------------------------- labels
@@ -374,6 +428,9 @@ class SleepReviewState:
         """
         if not self.active_brush:
             return
+        if self.segment:
+            start_sec = max(start_sec, self.segment[0])
+            end_sec = min(end_sec, self.segment[1])
         lo, hi = self._bins(start_sec, end_sec)
         if hi <= lo:
             return
@@ -403,8 +460,19 @@ class SleepReviewState:
         self.code[lo:hi] = self._codes(self.onehot[lo:hi])
         self.update_counter += 1
 
-    def end_stroke(self):
-        """Close the current stroke as one undoable step. True if it changed anything."""
+    def confirm_segment(self, tag=None):
+        """Confirm every Wake, NREM and REM bin in the segment, as one
+        step."""
+        lo, hi = self._bins(*self.segment)
+        self.end_stroke()
+        self._stroke = (self.onehot.copy(), self.confirmed.copy())
+        sleep = np.isin(self.code[lo:hi], [LABELS.index(n) for n in ('Wake', 'NREM', 'REM')])
+        self.confirmed[lo:hi][sleep] = 1
+        self.update_counter += 1
+        return self.end_stroke(tag)
+
+    def end_stroke(self, tag=None):
+        """Close the current stroke"""
         if self._stroke is None:
             return False
         onehot, confirmed = self._stroke
@@ -415,7 +483,8 @@ class SleepReviewState:
             return False
         lo, hi = int(diff[0]), int(diff[-1]) + 1
         self._undo.append((lo, onehot[lo:hi].copy(), confirmed[lo:hi].copy(),
-                           self.onehot[lo:hi].copy(), self.confirmed[lo:hi].copy()))
+                           self.onehot[lo:hi].copy(), self.confirmed[lo:hi].copy(),
+                           tag))
         self._redo.clear()
         self.version += 1
         return True
@@ -437,24 +506,24 @@ class SleepReviewState:
         return bool(self._redo)
 
     def undo(self):
-        """Take back the last stroke. True if there was one."""
+        """Take back the last stroke, and return it (None if there was none)."""
         self.end_stroke()
         if not self._undo:
-            return False
+            return None
         step = self._undo.pop()
         self._apply(step[0], step[1], step[2])
         self._redo.append(step)
-        return True
+        return step
 
     def redo(self):
-        """Put back the last stroke undone. True if there was one."""
+        """Put back the last stroke undone, and return it (None if there was none)."""
         self.end_stroke()
         if not self._redo:
-            return False
+            return None
         step = self._redo.pop()
         self._apply(step[0], step[3], step[4])
         self._undo.append(step)
-        return True
+        return step
 
     def revert(self):
         """Return to the scoring as it was when the scorer opened, history and all."""
@@ -547,7 +616,7 @@ class Canvas(QWidget):
 
 
 class TimelineBar(QWidget):
-    """A scroll bar over the whole recording.
+    """A scroll bar over the whole recording, or the segment being reviewed.
 
     The thumb never shrinks below MIN_THUMB pixels, so it stays easy to grab
     however long the recording is.
@@ -613,31 +682,30 @@ class TimelineBar(QWidget):
 class ScorerWindow(QMainWindow):
     """The scorer window: traces, video, menus and a scroll bar, saving as it goes."""
 
-    def __init__(self, state, raw, video, num_eeg, v_range):
+    def __init__(self, view=None, playlist=None):
+        """Show one recording (`view`), or step through a playlist's segments."""
         super().__init__()
-        self.state, self.raw, self.video = state, raw, video
-        self.num_eeg, self.v_range = num_eeg, v_range
+        self.playlist = playlist
+        self.views = {}                    # recording name -> View, kept open
+        self.state = None
         self.eeg_gain = 1.0
         self.emg_gain = 1.0
         self.eeg_offset = 0.0
         self._painting = False
         self._last_paint_sec = 0.0
-        self._eeg_key = None
-        self._eeg_slice = None
         self._status = None
         self._help = None
-        # Only apply a 200 Hz low-pass if the sampling rate captures frequencies above 200 Hz
-        self._h_freq = 200.0 if (state.sfreq / 2.0) > 200.0 else None
-        state.message = self._message
 
-        self.setWindowTitle(f"{WINDOW_NAME} — {os.path.basename(state.csv_path)}")
         self.setFocusPolicy(Qt.StrongFocus)
         self.canvas = Canvas()
         self.scroll = TimelineBar()
+        self.banner = self._build_banner() if playlist else None
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        if self.banner:
+            lay.addWidget(self.banner)
         lay.addWidget(self.canvas, 1)
         lay.addWidget(self.scroll)
         self.setCentralWidget(central)
@@ -645,25 +713,123 @@ class ScorerWindow(QMainWindow):
         self.canvas.dragged.connect(self._on_drag)
         self.canvas.released.connect(self._on_release)
         self.canvas.resized.connect(self._on_resize)
-        self.scroll.scrolled.connect(state.scroll_to)
+        self.scroll.scrolled.connect(
+            lambda v: self.state.scroll_to(self.state.view_range()[0] + v))
 
         self.lbl_mode = QLabel()
         self.lbl_save = QLabel()
         self.statusBar().addPermanentWidget(self.lbl_mode)
         self.statusBar().addPermanentWidget(self.lbl_save)
+
+        if playlist:
+            self._initial_done = [seg.get("done", False) for seg in playlist.segments]
+            view = self._open(playlist.segments[playlist.index]["recording"])
+        self._show(view)
         self._build_menus()
+        if playlist:
+            self._go_to(playlist.index)
 
         # Saves at most AUTOSAVE_MS after the first unsaved edit.
         self._autosave = QTimer(self)
         self._autosave.setSingleShot(True)
         self._autosave.setInterval(AUTOSAVE_MS)
-        self._autosave.timeout.connect(state.save_async)
+        self._autosave.timeout.connect(lambda: self.state.save_async())
 
         self._last_tick = time.perf_counter()
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
         self._timer.start(15)
+
+    def _show(self, view):
+        """Put a recording on screen, keeping the brush and view settings."""
+        old = self.state
+        self.view = view
+        self.state, self.raw, self.video, self.num_eeg, self.v_range = view
+        s = self.state
+        if old is not None and old is not s:
+            for k in ('active_brush', 'paint_mode', 'window_width_sec',
+                      'brush_size_sec', 'paused'):
+                setattr(s, k, getattr(old, k))
+        s.message = self._message
+        s.eeg_w, s.eeg_h = self.canvas.width(), self.canvas.height() - s.bottom_h
+        self._eeg_key = None
+        self._eeg_slice = None
+        # Only apply a 200 Hz low-pass if the sampling rate captures frequencies above 200 Hz
+        self._h_freq = 200.0 if (s.sfreq / 2.0) > 200.0 else None
+        self._status = None
+        clear_render_cache()
+        self.setWindowTitle(f"{WINDOW_NAME} — {os.path.basename(s.csv_path)}")
+
+    # -------------------------------------------------------------- playlist
+    def _open(self, name):
+        """The View for a playlist recording, opening it the first time."""
+        if name not in self.views:
+            self.statusBar().showMessage(f"Opening {name} …")
+            QApplication.processEvents()
+            self.views[name] = open_playlist_recording(self.playlist, name)
+        return self.views[name]
+
+    def _build_banner(self):
+        bar = QWidget()
+        bar.setStyleSheet("background:#2b2b2b; color:white;")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(10, 4, 10, 4)
+        self.lbl_segment = QLabel()
+        row.addWidget(self.lbl_segment, 1)
+        return bar
+
+    def _refresh_banner(self):
+        pl = self.playlist
+        seg = pl.segments[pl.index]
+        n_done = sum(bool(x.get("done")) for x in pl.segments)
+        self.lbl_segment.setText(
+            f"<b>Segment {pl.index + 1} of {len(pl.segments)}</b> &nbsp; "
+            f"{seg['recording']} &nbsp; {_hms(seg['start'])} – {_hms(seg['end'])} "
+            f"({(seg['end'] - seg['start']) / 60:.1f} min)"
+            + (" &nbsp; <b style='color:#6fdc8c'>✓ done</b>" if seg.get("done") else "")
+            + f" &nbsp;&nbsp; <span style='color:#aaa'>{n_done} of "
+              f"{len(pl.segments)} done</span>")
+
+    def _go_to(self, i):
+        """Show segment i of the playlist."""
+        pl = self.playlist
+        i = min(max(i, 0), len(pl.segments) - 1)
+        seg = pl.segments[i]
+        self._painting = False
+        self.state.end_stroke()
+        self.state.save_async()
+        view = self._open(seg["recording"])
+        moved = view is not self.view
+        if moved:
+            self._show(view)
+        pl.index = i
+        s = self.state
+        s.segment = (float(seg["start"]), float(seg["end"]))
+        s.segment_nav = (i, len(pl.segments))
+        s.range_start_sec = None
+        s.scroll_to(s.segment[0])
+        s.update_counter += 1
+        self._refresh_banner()
+        self._message(f"Segment {i + 1} of {len(pl.segments)}"
+                      + (f": now in {seg['recording']}" if moved else ""))
+
+    def _next_segment(self):
+        """Confirm the labels left in this segment, then show the next one, or
+        close after the last."""
+        pl = self.playlist
+        self._painting = False
+        self._edited(self.state.confirm_segment(tag=pl.index))
+        self._set_done(pl.index, True)
+        if pl.index + 1 < len(pl.segments):
+            self._go_to(pl.index + 1)
+        else:
+            self.close()
+
+    def _set_done(self, i, done):
+        self.playlist.segments[i]["done"] = done
+        self.playlist.save()
+        self._refresh_banner()
 
     # ------------------------------------------------------------------ menus
     def _action(self, menu, text, slot, keys=None):
@@ -689,7 +855,7 @@ class ScorerWindow(QMainWindow):
         s = self.state
         mb = self.menuBar()
         m = mb.addMenu("File")
-        self._action(m, "Save Now", s.save_async, QKeySequence.Save)
+        self._action(m, "Save Now", lambda: self.state.save_async(), QKeySequence.Save)
         self._action(m, "Revert to Last Version…", self._revert)
         m.addSeparator()
         self._action(m, "Close", self.close, QKeySequence.Close)
@@ -714,6 +880,13 @@ class ScorerWindow(QMainWindow):
         self._action(m, "Minimum", lambda: self._set_brush_size(None))
         self._action(m, "Decrease", lambda: self._set_brush_size(-1))
         self._action(m, "Increase", lambda: self._set_brush_size(+1))
+
+        if self.playlist:
+            m = mb.addMenu("Segment")
+            self._action(m, "Previous Segment", lambda: self._go_to(self.playlist.index - 1),
+                         [QKeySequence("Ctrl+Left")])
+            self._action(m, "Next Segment (or Close After the Last)", self._next_segment,
+                         [QKeySequence("Ctrl+Right")])
 
         m = mb.addMenu("Help")
         self._action(m, "Keyboard Controls", self._show_help, QKeySequence.HelpContents)
@@ -746,7 +919,8 @@ class ScorerWindow(QMainWindow):
             ("Click, then click again", "Paint between the two clicks (Range mode)"),
             ("◀ / ▶ in the side panel", "Previous / next bout of that state, or "
                                         "low-certainty epoch"),
-            ("Scroll bar", "Drag, or click along it, to move through the recording"),
+            ("Scroll bar", "Drag, or click along it, to move through the recording "
+                           "or segment"),
             ("1 – 7", "Brush: Wake, NREM, REM, Artifact, Unclear, Confirm, Erase"),
             ("", "Painting a state over the same state confirms it, as Confirm does"),
             ("Space", "Pause / play"),
@@ -761,7 +935,11 @@ class ScorerWindow(QMainWindow):
             (f"{native('Ctrl+Shift+Z')}  or  {native('Ctrl+Y')}", "Redo"),
             (native("Ctrl+S"), "Save now (changes also save automatically)"),
             (f"Esc  or  {native('Ctrl+W')}", "Close"),
-        ]
+        ] + ([
+            (native("Ctrl+Left"), "Previous segment"),
+            (native("Ctrl+Right"), "Next segment, confirming the labels left in "
+                                   "this one; after the last, close"),
+        ] if self.playlist else [])
 
     def _show_help(self):
         if self._help is None:
@@ -787,11 +965,23 @@ class ScorerWindow(QMainWindow):
 
     def _undo(self):
         self._painting = False
-        self._edited(self.state.undo())
+        step = self.state.undo()
+        self._step_tag(step, done=False)
+        self._edited(step is not None)
 
     def _redo(self):
         self._painting = False
-        self._edited(self.state.redo())
+        step = self.state.redo()
+        self._step_tag(step, done=True)
+        self._edited(step is not None)
+
+    def _step_tag(self, step, done):
+        """Undoing or redoing a "Segment done" also clears or sets its mark."""
+        if self.playlist and step is not None and step[5] is not None:
+            self._set_done(step[5], done)
+
+    def _all_views(self):
+        return list(self.views.values()) if self.playlist else [self.view]
 
     def _revert(self):
         if QMessageBox.question(
@@ -800,8 +990,14 @@ class ScorerWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No) == QMessageBox.Yes:
             self._painting = False
-            self.state.revert()
-            self.state.save_async()
+            for v in self._all_views():
+                v.state.revert()
+                v.state.save_async()
+            if self.playlist:
+                for seg, done in zip(self.playlist.segments, self._initial_done):
+                    seg["done"] = done
+                self.playlist.save()
+                self._refresh_banner()
             self._refresh_status()
 
     def _message(self, text):
@@ -833,7 +1029,12 @@ class ScorerWindow(QMainWindow):
             bx, by = x - (s.eeg_w - s.side_w), y - s.eeg_h
             for (x1, y1, x2, y2), target, direction in s.nav_buttons:
                 if x1 <= bx <= x2 and y1 <= by <= y2:
-                    if target == 'uncertain':
+                    if target == 'segment':
+                        if direction < 0:
+                            self._go_to(self.playlist.index - 1)
+                        else:
+                            self._next_segment()
+                    elif target == 'uncertain':
                         s.jump_to_next_uncertain(direction)
                     else:
                         s.jump_to_bout(target, direction)
@@ -920,7 +1121,8 @@ class ScorerWindow(QMainWindow):
         if s.paused:
             cv2.putText(img, "PAUSED", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
         self.canvas.show_frame(img)
-        self.scroll.set_view(s.current_time_sec, s.window_width_sec, s.duration_sec)
+        lo, hi = s.view_range()
+        self.scroll.set_view(s.current_time_sec - lo, s.window_width_sec, hi - lo)
         self._refresh_status()
 
     def _refresh_status(self):
@@ -946,24 +1148,27 @@ class ScorerWindow(QMainWindow):
         self._autosave.stop()
         self._painting = False
         self.state.end_stroke()
-        if not self.state.flush() and QMessageBox.question(
+        failed = [v.state for v in self._all_views() if not v.state.flush()]
+        if failed and QMessageBox.question(
                 self, "Could not save",
-                f"The scoring could not be saved:\n{self.state.save_error}\n\n"
-                f"Close anyway and lose the unsaved changes?",
+                "The scoring could not be saved:\n"
+                + "\n".join(f"{os.path.basename(f.csv_path)}: {f.save_error}" for f in failed)
+                + "\n\nClose anyway and lose the unsaved changes?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No) != QMessageBox.Yes:
             self._timer.start()
             ev.ignore()
             return
-        self.state.shutdown()
-        self.video.release()
+        for v in self._all_views():
+            v.state.shutdown()
+            v.video.release()
         ev.accept()
 
 
-def review_sleep(edf_path, csv_path, video_path,
-                 review_meta_path=None, certainty_threshold=0.80,
-                 eeg_idx=None):
-    """Run the scorer: open the recording and show it until the window closes."""
+def open_recording(edf_path, csv_path, video_path,
+                   review_meta_path=None, certainty_threshold=0.80,
+                   eeg_idx=None):
+    """Open a recording, its scoring and its video, ready for the window."""
     print(f"Lazy Loading {os.path.basename(edf_path)}...")
     mne.set_log_level('ERROR')
 
@@ -1038,20 +1243,54 @@ def review_sleep(edf_path, csv_path, video_path,
     labels_dir = os.path.dirname(os.path.abspath(csv_path))
     cache_dir = os.path.join(os.path.dirname(labels_dir), "cache") \
         if os.path.basename(labels_dir) == "labels" else None
-    video_engine = VideoHandler(video_path, cache_dir=cache_dir)
+    start = raw.info['meas_date']
+    video_engine = VideoHandler(video_path, cache_dir=cache_dir,
+                                duration=n_times / sfreq,
+                                start_unix=start.timestamp() if start else None)
+    return View(state, raw, video_engine, num_eeg, v_range)
     
+
+def open_playlist_recording(playlist, name):
+    """Open one of a playlist's recordings, with the channels the project set."""
+    rec = playlist.recordings[name]
+    chans = playlist.data.get("eeg_channels") or []
+    return open_recording(rec["edf"], rec["scored"],
+                          rec.get("video") or find_associated_video(rec["edf"]),
+                          review_meta_path=rec.get("meta"),
+                          certainty_threshold=playlist.data.get("certainty_threshold", 0.80),
+                          eeg_idx=[int(c) - 1 for c in chans] or None)
+
+
+def _run(window):
     app = QApplication.instance() or QApplication(sys.argv)
-    win = ScorerWindow(state, raw, video_engine, num_eeg, v_range)
-    win.showMaximized()
+    window.showMaximized()
     # the Somnus app waits for this line to know the window is up
     print("Scorer ready.", flush=True)
     app.exec()
+
+
+def review_sleep(edf_path, csv_path, video_path,
+                 review_meta_path=None, certainty_threshold=0.80,
+                 eeg_idx=None):
+    """Run the scorer: open the recording and show it until the window closes."""
+    QApplication.instance() or QApplication(sys.argv)
+    _run(ScorerWindow(open_recording(edf_path, csv_path, video_path,
+                                     review_meta_path, certainty_threshold, eeg_idx)))
+
+
+def review_playlist(path):
+    """Run the scorer over the segments listed in a playlist file."""
+    QApplication.instance() or QApplication(sys.argv)
+    _run(ScorerWindow(playlist=Playlist(path)))
 
 
 def main():
     """Start the scorer from the command line."""
     app = QApplication(sys.argv)
 
+    if len(sys.argv) > 2 and sys.argv[1] == "--playlist":
+        review_playlist(os.path.abspath(sys.argv[2]))
+        return
     if len(sys.argv) > 1:
         edf_path = os.path.abspath(sys.argv[1])
     else:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from datetime import datetime, timezone
 
 import numpy as np
@@ -88,7 +88,7 @@ class Recording:
     coords: str | None = None          # tracking positions
     timestamps: str | None = None      # true per-frame times for the tracking
     video: str | None = None
-    selected: bool = False             # ticked in the Project tab
+    selected: bool = True              # ticked in the Project tab
     notes: str = ""
     mm_per_px: float | None = None     # optional, reports velocity in mm/s
     skip_video: bool = False           # user chose to score without velocity
@@ -167,15 +167,17 @@ class Project:
         """Open an existing project folder."""
         with open(os.path.join(path, "project.json")) as fh:
             d = json.load(fh)
+        rec_fields = {f.name for f in fields(Recording)}
         recs, seen = [], set()
         for r in d.pop("recordings", []):
-            rec = Recording(**r)
+            rec = Recording(**{k: v for k, v in r.items() if k in rec_fields})
             if rec.name not in seen:
                 recs.append(rec)
                 seen.add(rec.name)
         if d.get("model") and not os.path.exists(d["model"]):
             d["model"] = DEFAULT_ARTIFACT
-        return cls(path=path, recordings=recs, **d)
+        own = {f.name for f in fields(cls)}
+        return cls(path=path, recordings=recs, **{k: v for k, v in d.items() if k in own})
 
     @classmethod
     def create(cls, path: str, name: str | None = None,
@@ -196,6 +198,14 @@ def channel_names(edf: str) -> list[str]:
     """The channel names in a recording, in order."""
     import mne
     return mne.io.read_raw_edf(edf, preload=False).ch_names
+
+
+def recording_epochs(edf: str) -> int:
+    """How many whole epochs the recording holds, from its header alone."""
+    import mne
+    from somnus.features import n_epochs_for
+    raw = mne.io.read_raw_edf(edf, preload=False, verbose=False)
+    return n_epochs_for(raw.n_times, raw.info["sfreq"])
 
 
 def suggest_channels(edf: str) -> tuple[list[int], int | None]:
@@ -294,6 +304,9 @@ class LabelStore:
             for c in LABEL_COLS:
                 if c not in df.columns:
                     df[c] = np.nan
+            # text even when empty, so labels can be written into it later
+            for c in ("state", "source", "model", "model_state", "updated"):
+                df[c] = df[c].astype(object)
             return df[LABEL_COLS]
         return pd.DataFrame(columns=LABEL_COLS)
 
@@ -414,6 +427,17 @@ class LabelStore:
                            columns=LABEL_COLS)
         self.df = pd.concat([keep, new], ignore_index=True)
 
+    def remove_imported(self) -> int:
+        """Take out labels imported from a scoring file, going back to the
+        model's label where there is one. Returns how many were removed."""
+        imp = (self.df["source"] == SRC_IMPORTED).to_numpy()
+        back = imp & self.df["model_state"].map(lambda x: isinstance(x, str)).to_numpy()
+        self.df.loc[back, "state"] = self.df.loc[back, "model_state"]
+        self.df.loc[back, "source"] = SRC_MODEL
+        self.df.loc[back, "updated"] = _now()
+        self.df = self.df[~(imp & ~back)]
+        return int(imp.sum())
+
     def import_manual(self, scored_csv: str, n_epochs: int) -> int:
         """Bring in scoring the user already had, as manual labels.
 
@@ -443,10 +467,25 @@ class LabelStore:
         return len(imp)
 
 
+def import_scoring(project: Project, recording: Recording) -> int:
+    """Take the scoring file found beside a recording as its manual labels.
+    Returns how many epochs were imported."""
+    store = LabelStore(project, recording.name)
+    n = store.import_manual(recording.scored, recording_epochs(recording.edf))
+    store.save()
+    return n
+
+
 # --------------------------------------------------------------------- scoring
+def feature_cache(project: Project, recording: Recording) -> str:
+    """Where the recording's feature table is cached. Tables made without
+    movement are kept apart, so switching it never reuses the wrong one."""
+    tag = "" if recording.has_velocity else "_nomovement"
+    return os.path.join(project.cache_dir, f"{recording.name}_features{tag}.csv")
+
+
 def featurize(recording: Recording, cache: str | None = None,
-              project: "Project | None" = None, progress=None,
-              log=print) -> pd.DataFrame:
+              project: "Project | None" = None, progress=None) -> pd.DataFrame:
     """Feature table for the recording, cached under the project.
 
     The project supplies which channels are EEG and which is EMG.
@@ -454,7 +493,6 @@ def featurize(recording: Recording, cache: str | None = None,
     if cache and os.path.exists(cache):
         return pd.read_csv(cache)
     from somnus.data import datasets as B
-    from somnus.features import labels_from_onehot
     entry = {"recording": recording.name, "edf": recording.edf,
              "dataset": "user", "group": "user",
              "subject": recording.name.split("_")[0],
@@ -470,14 +508,6 @@ def featurize(recording: Recording, cache: str | None = None,
                      eeg_chan=project.eeg_chan or None,
                      emg_chan=project.emg_chan,
                      assume_frame_times=True, progress=progress)
-    # Existing scoring is optional here: a file that cannot be read leaves the
-    # epochs unlabeled rather than stopping the recording from being scored.
-    if recording.scored:
-        try:
-            df["state"] = labels_from_onehot(pd.read_csv(recording.scored), len(df))
-        except Exception as e:
-            log(f"    could not read {os.path.basename(recording.scored)} "
-                f"({type(e).__name__}: {e}); scoring without it")
     if cache:
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         df.to_csv(cache, index=False)
@@ -728,6 +758,58 @@ def read_viewer_labels(project: "Project", recording: Recording,
             n_cor += 1
     return {"corrected": n_cor, "confirmed": n_con,
             "excluded": n_exc, "reverted": n_rev}
+
+
+def playlist_path(project: Project) -> str:
+    return os.path.join(project.labels_dir, "playlist.json")
+
+
+def write_playlist(project: Project, segments: list[tuple[str, int, int]],
+                   certainty_threshold: float = 0.80) -> str:
+    """Write the scorer's files for a run of segments, and the playlist that
+    strings them together. Returns the playlist's path.
+
+    `segments` holds (recording, first epoch, number of epochs), in the order
+    they will be shown. Every recording must have been scored.
+    """
+    recs = {}
+    for name in dict.fromkeys(n for n, _, _ in segments):
+        r, out = project.get(name), load_model_output(project, name)
+        if r is None or out is None:
+            raise ValueError(f"{name} has not been scored")
+        labels, raw, proba = out
+        scored, meta = write_viewer_bundle(project, r, labels, proba, raw,
+                                           LabelStore(project, name))
+        recs[name] = {"edf": r.edf, "scored": scored, "meta": meta,
+                      "video": r.video}
+    playlist = {
+        "eeg_channels": project.eeg_chan,
+        "certainty_threshold": certainty_threshold,
+        "recordings": recs,
+        "segments": [{"recording": n, "start": e0 * EPOCH_SEC,
+                      "end": (e0 + k) * EPOCH_SEC, "done": False}
+                     for n, e0, k in segments],
+    }
+    path = playlist_path(project)
+    with open(path, "w") as fh:
+        json.dump(playlist, fh, indent=2)
+    return path
+
+
+def read_playlist_labels(project: Project) -> dict:
+    """Bring in the labels from every recording in the playlist, as
+    read_viewer_labels() does for one. Returns its counts per recording."""
+    with open(playlist_path(project)) as fh:
+        playlist = json.load(fh)
+    out = {}
+    for name in playlist["recordings"]:
+        r, model = project.get(name), load_model_output(project, name)
+        if r is None or model is None:
+            continue
+        store = LabelStore(project, name)
+        out[name] = read_viewer_labels(project, r, store, len(model[0]))
+        store.save()
+    return out
 
 
 # ------------------------------------------------------------------- QC checks
