@@ -29,6 +29,7 @@ import csv
 import glob
 import os
 import pickle
+import re
 
 import numpy as np
 import pandas as pd
@@ -153,6 +154,30 @@ def load_coordinates(path: str) -> tuple[np.ndarray, dict]:
                          f"'coordinates' key. Keys: "
                          f"{', '.join(map(str, list(obj)[:8]))}")
     return np.asarray(obj, float), {}
+
+
+VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov", ".mkv", ".avi", ".wmv", ".mpg",
+                    ".mpeg", ".webm", ".flv", ".ts", ".mts")
+# made from the recording's video rather than being it
+DERIVED_VIDEOS = ("_annotated", "_mask", "_overlay", "_highlights", "_labeled")
+
+
+def find_video(edf: str) -> str | None:
+    """The video that belongs to a recording, from the files beside it.
+
+    Any common container, in any letter case. Named after the recording,
+    else carrying its date-time stamp; overlays and clips made from the video
+    are passed over. The first by name wins.
+    """
+    folder = os.path.dirname(os.path.abspath(edf))
+    base = os.path.splitext(os.path.basename(edf))[0]
+    videos = sorted(f for f in os.listdir(folder)
+                    if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
+                    and not any(x in f for x in DERIVED_VIDEOS))
+    stamp = re.search(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2}", base)
+    hits = ([f for f in videos if f.startswith(base)]
+            or [f for f in videos if stamp and stamp.group(0) in f])
+    return os.path.join(folder, hits[0]) if hits else None
 
 
 def frame_times_from_video(video: str) -> np.ndarray | None:

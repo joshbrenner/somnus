@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import re
 import json
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMessageBox, QVBoxLayout, QWidget,
 )
 
+from somnus.data.datasets import find_video
 from somnus.scorer.video_handler import VideoHandler
 from somnus.scorer.ui_rendering import (render_composite, clear_render_cache,
                                         WINDOW_NAME, PAINTABLE, LABELS)
@@ -27,45 +27,6 @@ BRUSHES = PAINTABLE + ('Confirm', 'Erase')
 VIEW_WIDTHS = ((4.0, '4 sec'), (10.0, '10 sec'), (30.0, '30 sec'), (60.0, '1 min'))
 STEP_SEC = {4.0: 0.5, 10.0: 2.0, 30.0: 10.0, 60.0: 30.0}
 AUTOSAVE_MS = 1500
-
-def find_associated_video(edf_path):
-    """Look beside the recording for the video that belongs to it."""
-    directory = os.path.dirname(os.path.abspath(edf_path))
-    basename = os.path.basename(edf_path)
-    candidates = []
-    
-    # 1. Search by timestamp match
-    match = re.search(r'\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2}', basename)
-    if match:
-        timestamp = match.group(0)
-        for file in os.listdir(directory):
-            if file.lower().endswith(('.mp4', '.avi', '.mkv')) and timestamp in file:
-                candidates.append(os.path.join(directory, file))
-                
-    # 2. Search by base filename match if no timestamps match
-    if not candidates:
-        base_no_ext = os.path.splitext(basename)[0]
-        for file in os.listdir(directory):
-            if file.lower().endswith(('.mp4', '.avi', '.mkv')) and base_no_ext in file:
-                candidates.append(os.path.join(directory, file))
-                
-    if not candidates:
-        return None
-        
-    # 3. Pick the largest file
-    best_video = None
-    max_size = -1
-    
-    for candidate_path in candidates:
-        try:
-            size = os.path.getsize(candidate_path)
-            if size > max_size:
-                max_size = size
-                best_video = candidate_path
-        except OSError:
-            pass
-            
-    return best_video
 
 # One opened recording: everything the window draws from.
 View = namedtuple("View", "state raw video num_eeg v_range")
@@ -1255,7 +1216,7 @@ def open_playlist_recording(playlist, name):
     rec = playlist.recordings[name]
     chans = playlist.data.get("eeg_channels") or []
     return open_recording(rec["edf"], rec["scored"],
-                          rec.get("video") or find_associated_video(rec["edf"]),
+                          rec.get("video") or find_video(rec["edf"]),
                           review_meta_path=rec.get("meta"),
                           certainty_threshold=playlist.data.get("certainty_threshold", 0.80),
                           eeg_idx=[int(c) - 1 for c in chans] or None)
@@ -1315,7 +1276,7 @@ def main():
         print(f"Error: Could not find matching {os.path.basename(csv_path)}")
         return
 
-    video_path = find_associated_video(edf_path)
+    video_path = find_video(edf_path)
     if video_path:
         print(f"Auto-detected associated video: {os.path.basename(video_path)}")
     else:

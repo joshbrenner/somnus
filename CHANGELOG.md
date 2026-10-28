@@ -60,3 +60,7 @@
   the EEG by capture time, so it stays aligned when the two clocks differ.
 - Reviewed bins in the scorer are drawn darker, between the previous colour
   and the model's.
+- A recording's video is found in any common container (.mp4, .mkv, .mov,
+  .avi and others, in any letter case), by the recording's name or else its
+  date-time stamp, skipping overlays and clips made from it. The project and
+  the scorer use the same rule.

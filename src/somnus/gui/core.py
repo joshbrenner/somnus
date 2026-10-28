@@ -241,6 +241,7 @@ def recording_for(edf: str) -> Recording:
     writing and nothing is copied.
     """
     import glob as _glob
+    from somnus.data.datasets import find_video
     root = os.path.dirname(edf)
     base = os.path.basename(edf)[:-4]
 
@@ -265,8 +266,7 @@ def recording_for(edf: str) -> Recording:
               or first(base + "*DLC*.h5")
               or first(base + "*DLC*.csv", exclude=("_full", "_meta")))
     ts = first(base + "*timestamps.npy")
-    video = first(base + "*.mp4", exclude=("_annotated", "_mask",
-                                          "_overlay", "_highlights"))
+    video = find_video(edf)
     return Recording(name=base, edf=edf, scored=scored,
                      coords=coords, timestamps=ts, video=video)
 
